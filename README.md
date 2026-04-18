@@ -36,13 +36,5 @@ Incoming requests are placed into an `asyncio.PriorityQueue` before being forwar
 ### Phase 4 — Protocol Optimization
 The proxy accepts external connections over HTTP and WebSockets, but communicates with internal services via gRPC or async FastAPI. This protocol conversion layer demonstrates how a proxy can act as a bridge between different communication paradigms, optimizing internal traffic while keeping the external API simple and standard.
 
----
 
-## References
 
-- [aiohttp Documentation](https://docs.aiohttp.org/en/stable/)
-- [asyncio.Queue — Python Docs](https://docs.python.org/3/library/asyncio-queue.html)
-- [asyncio PriorityQueue — SuperFastPython](https://superfastpython.com/asyncio-priorityqueue/)
-- [gRPC Python Quickstart](https://grpc.io/docs/languages/python/quickstart/)
-- [FastAPI Async Guide](https://fastapi.tiangolo.com/async/)
-- [Docker Compose Docs](https://docs.docker.com/compose/)
