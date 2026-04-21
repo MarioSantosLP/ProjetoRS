@@ -3,6 +3,16 @@
 A Python-based reverse proxy  that routes HTTP and WebSocket traffic to multiple Docker containers, featuring Round Robin load balancing, priority-based request queuing, and optional protocol conversion via gRPC or FastAPI.
 
 ---
+## How to run
+First install the dependecies in a virtual environment
+sudo apt install python3-venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install aiohttp
+
+Run this every time you come back to the folder:
+source .venv/bin/activate
 
 ## Overview
 
