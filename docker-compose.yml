@@ -8,3 +8,13 @@ services:
     build: .
     environment:
       - SERVICE_NAME=web2
+
+  proxy:
+      build: ./proxy
+      ports:
+        - "8080:8080" #only expose proxy to host
+      volumes:
+        - ./logs:/app/logs
+      depends_on:
+        - web1
+        - web2
