@@ -1,3 +1,4 @@
+
 import aiohttp
 from aiohttp import web
 from load_balancer import get_container, release_request_from_container
@@ -8,6 +9,7 @@ from load_balancer import get_container, release_request_from_container
 #then based on the method and content type for worker
 
 #Questions for teacher:
+#nginx haproxy check state of server and stop routing if its down 
 #1. How should i handle the routing logic?
 #2. Load balancing can only be done with one algorithm, or can i have different algorithms for different containers?
 #3 How to handle a situ where a container is down? health checks? retry logic?
