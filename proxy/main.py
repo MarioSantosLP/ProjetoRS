@@ -1,5 +1,5 @@
 import asyncio
-import itertools
+
 import logging
 import uuid
 import sys
@@ -22,11 +22,14 @@ CONTAINERS = [
     "http://web2:8000",
 ]
 
-# Round robin — itertools.cycle just loops through the list forever
-_rr = itertools.cycle(CONTAINERS)
+# Round robin could have used itertools.cycle
+_rr_index = 0
 
 def next_container() -> str:
-    return next(_rr)
+    global _rr_index
+    container = CONTAINERS[_rr_index % len(CONTAINERS)]
+    _rr_index += 1
+    return container
 
 
 async def handle(request: web.Request) -> web.Response:

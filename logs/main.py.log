@@ -24,3 +24,44 @@
 09:54:30 Using selector: EpollSelector
 09:54:32 [d7e8fa73] GET /hellosff → http://web1:8000 (from 172.21.0.1)
 09:54:32 [d7e8fa73] ← 200 from http://web1:8000
+10:06:11 Using selector: EpollSelector
+10:06:24 [1c67df98] GET /ping → http://web1:8000 (from 172.21.0.1)
+10:06:24 [1c67df98] ← 200 from http://web1:8000
+10:06:34 [56d1fa51] GET /healthz → http://web2:8000 (from 172.21.0.1)
+10:06:34 [56d1fa51] ← 200 from http://web2:8000
+10:06:53 [d9fbcafa] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:06:53 [d9fbcafa] ← 200 from http://web1:8000
+10:06:53 [f9fd0798] GET /hello → http://web2:8000 (from 172.21.0.1)
+10:06:53 [f9fd0798] ← 200 from http://web2:8000
+10:06:53 [a32718cf] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:06:54 [a32718cf] ← 200 from http://web1:8000
+10:11:07 Using selector: EpollSelector
+10:11:51 [a6023382] GET /healthz → http://web1:8000 (from 172.21.0.1)
+10:11:51 [a6023382] ← 200 from http://web1:8000
+10:12:03 [86ee4721] GET /ping → http://web2:8000 (from 172.21.0.1)
+10:12:03 [86ee4721] ← 200 from http://web2:8000
+10:12:15 [6a75ba52] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:12:15 [6a75ba52] ← 200 from http://web1:8000
+10:12:15 [76170cca] GET /hello → http://web2:8000 (from 172.21.0.1)
+10:12:16 [76170cca] ← 200 from http://web2:8000
+10:12:16 [0d343f5e] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:12:16 [0d343f5e] ← 200 from http://web1:8000
+10:12:20 [c1f2669f] GET /healthz → http://web2:8000 (from 172.21.0.1)
+10:12:20 [c1f2669f] ← 200 from http://web2:8000
+10:12:26 [9917b22b] GET /healthz → http://web1:8000 (from 172.21.0.1)
+10:12:26 [9917b22b] ← 200 from http://web1:8000
+10:19:29 Using selector: EpollSelector
+10:20:00 [84c97378] GET /healthz → http://web1:8000 (from 172.21.0.1)
+10:20:00 [84c97378] ← 200 from http://web1:8000
+10:20:00 [2c513825] GET /healthz → http://web2:8000 (from 172.21.0.1)
+10:20:00 [2c513825] ← 200 from http://web2:8000
+10:20:00 [579ac604] GET /healthz → http://web1:8000 (from 172.21.0.1)
+10:20:00 [579ac604] ← 200 from http://web1:8000
+10:20:00 [84248c85] GET /healthz → http://web2:8000 (from 172.21.0.1)
+10:20:00 [84248c85] ← 200 from http://web2:8000
+10:20:13 [5b7bca7d] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:20:13 [5b7bca7d] ← 200 from http://web1:8000
+10:20:13 [ba919bd5] GET /hello → http://web2:8000 (from 172.21.0.1)
+10:20:13 [ba919bd5] ← 200 from http://web2:8000
+10:20:13 [67843736] GET /hello → http://web1:8000 (from 172.21.0.1)
+10:20:13 [67843736] ← 200 from http://web1:8000

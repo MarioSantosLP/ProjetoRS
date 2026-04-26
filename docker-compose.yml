@@ -3,12 +3,15 @@ services:
     build: .
     environment:
       - SERVICE_NAME=web1
+    ports:
+      - "8001:8000" #expose for testing
 
   web2:
     build: .
     environment:
       - SERVICE_NAME=web2
-
+    ports:
+      - "8002:8000" 
   proxy:
       build: ./proxy
       ports:
