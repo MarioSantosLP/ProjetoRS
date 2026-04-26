@@ -1,45 +1,10 @@
-version: '3.8'
-#need to build the docker file
 services:
-  proxy:
-    build: ./src 
-    ports:
-      - "8080:8080"
-    depends_on:
-      - api1
-      - api2
-      - web1
-      - web2
-      - worker1
-      - worker2
-
-  api1:
-    build: ./containers/api
-    ports:
-      - "5001:5001"
-
-  api2:
-    build: ./containers/api
-    ports:
-      - "5002:5002"
-
   web1:
-    build: ./containers/web
-    ports:
-      - "5003:5003"
-  
+    build: .
+    environment:
+      - SERVICE_NAME=web1
+
   web2:
-    build: ./containers/web
-    ports:
-      - "5004:5004"
-      
-  worker1:
-    build: ./containers/worker
-    ports:
-      - "5005:5005"
-      
-  worker2:
-    build: ./containers/web
-    ports:
-      - "5006:5006"
-      
+    build: .
+    environment:
+      - SERVICE_NAME=web2
