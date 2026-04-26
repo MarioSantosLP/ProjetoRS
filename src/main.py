@@ -43,6 +43,7 @@ async def healthz():
     }
 
 
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def handle(request: Request, path: str):
     await asyncio.sleep(random.uniform(0.05, 0.2))

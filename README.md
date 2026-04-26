@@ -8,30 +8,38 @@
 ## What we're building
 
 An async reverse proxy in Python that:
-- Receives HTTP requests and forwards them to Docker containers
-- Uses round robin to distribute requests across containers
-- Uses an `asyncio.PriorityQueue` to process requests by priority (coming week 2)
-- Routes intelligently based on real container CPU usage via docker stats (coming week 3)
+- Receives HTTP/WebSocket/gRPC requests and forwards them to Docker containers
+- Inspects headers (X-Forwarded-For, X-Priority) to decide routing
+- Uses an `asyncio.PriorityQueue` to process requests by priority
+- Routes intelligently based on real container CPU usage (via docker stats)
 - Traces every request end-to-end so we can see exactly what the system is doing
-- Benchmarks multiple load balancing approaches and compares them (coming week 3)
+- Benchmarks multiple load balancing approaches and compares them
 
 ---
 
 ## Architecture
 
 ```
-Clients (HTTP)
-       │
-       ▼
-┌─────────────┐
-│    Proxy    │  ← assigns request ID, forwards X-Forwarded-For, round robins
-└──────┬──────┘
-       │
-  ┌────┴────┐
-[web1]    [web2]
-```
+┌─────────────────────────────────────────────────────┐
+│                      CLIENTS                        │
+│              HTTP      WebSocket      gRPC           │
+└────────────────────────┬────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│                      PROXY                          │
+│      X-Request-ID · X-Forwarded-For · Round Robin   │
+│         Priority Queue · Circuit Breaker            │
+└────────┬──────────────┬──────────────┬──────────────┘
+         │              │              │
+         ▼              ▼              ▼
+    ┌─────────┐    ┌─────────┐   ┌─────────┐
+    │  web1   │    │  web2   │   │ worker1 │  ...
+    │ :8000   │    │ :8000   │   │  :8000  │
+    └─────────┘    └─────────┘   └─────────┘
 
-Will grow to include priority queue and smarter load balancing in later weeks.
+         /ping  /healthz  on every container
+```
 
 ---
 
@@ -41,11 +49,12 @@ Will grow to include priority queue and smarter load balancing in later weeks.
 |---|---|
 | Proxy | Python `asyncio` + `aiohttp` |
 | Backends | Python `FastAPI` |
+| Container stats | `aiodocker` (reads CPU/mem from Docker API) |
+| Internal protocol | `grpcio` for gRPC backends |
+| Load testing | `locust` |
 | Containers | Docker + Docker Compose |
-| Load testing | `locust` (coming week 4) |
-| Container stats | `aiodocker` (coming week 3) |
 
-**Why not Nginx/HAProxy?** They can't do a custom priority queue without Lua scripting. Python asyncio maps directly to what the brief asks for. Could put Nginx in front for TLS — worth mentioning in the presentation as that's how real stacks work.
+**Why not Nginx/HAProxy?** They can't do a custom priority queue without Lua scripting nightmares. Python asyncio maps 1:1 to what the brief asks for. We could put Nginx in front just for TLS — worth mentioning in the presentation as that's how real stacks work.
 
 ---
 
@@ -54,182 +63,157 @@ Will grow to include priority queue and smarter load balancing in later weeks.
 ```
 ProjetoRS/
 ├── src/
-│   └── main.py          # dummy backend — pretends to do work, returns JSON
+│   └── main.py          # dummy backend
 ├── proxy/
-│   ├── main.py          # proxy — round robin, trace IDs, forwarding
+│   ├── main.py          # proxy core
 │   └── Dockerfile
-├── logs/
-│   └── main.py.log      # proxy logs land here
+├── logs/                # proxy logs, rotates at 2MB
 ├── docker-compose.yml
-└── Dockerfile           # backend dockerfile
+└── Dockerfile
 ```
 
 ---
 
-## What's built — Week 1 ✅
+## Components
 
-### Dummy backends (`src/main.py`)
+### Backends (`src/main.py`)
 
-Two instances of the same FastAPI app (`web1`, `web2`) that:
-- Accept any HTTP request
-- Sleep 50–200ms to simulate real work
-- Return which service handled it and what path was hit
-- Track active connections via middleware
-- Expose `/ping` to check if alive
-- Expose `/healthz` to check load (active connections / capacity)
-- Include their container ID in responses so you can tell them apart
+Two instances of the same FastAPI app (`web1`, `web2`) that pretend to do work. Each one:
+- Accepts any HTTP request and sleeps 50–200ms to simulate real work
+- Tracks active connections via middleware
+- Exposes `/ping` to check if the container is alive
+- Exposes `/healthz` to report load — active connections, capacity, load ratio and container ID
 
-Backends are not exposed to the outside world — only the proxy talks to them. But ports `8001` and `8002` are exposed for direct debugging.
+Backends are not exposed to the outside — only the proxy talks to them. Ports `8001` and `8002` are open for direct debugging only.
+
+---
 
 ### Proxy (`proxy/main.py`)
 
-A single `aiohttp` server that:
-- Receives every incoming HTTP request
-- Assigns a short unique `X-Request-ID` to it
+Single `aiohttp` server that sits in front of the backends. Currently:
+- Assigns a short unique `X-Request-ID` to every request
 - Forwards `X-Forwarded-For` with the client IP
-- Picks the next container via round robin (hand-rolled with a counter + modulo, no external libs)
-- Forwards the request to that container
-- Returns the response
+- Picks the next container via hand-rolled round robin (counter + modulo, no external libs)
+- Forwards the request and returns the response
 - Logs every step to `logs/main.py.log`
 
-Round robin implementation:
-```python
-_rr_index = 0
-
-def next_container() -> str:
-    global _rr_index
-    container = CONTAINERS[_rr_index % len(CONTAINERS)]
-    _rr_index += 1
-    return container
-```
-
-### Logging
-
-All proxy activity logs to `logs/main.py.log` via Python's `logging` module. The `logs/` folder is mounted as a Docker volume so logs persist on your machine.
-
-`aiohttp`'s own access log is silenced — only our logs appear.
+Round robin is hand-rolled intentionally — `itertools.cycle` hides the logic, a counter makes it explicit and easier to explain.
 
 ---
 
-## docker-compose.yml
+### Load Balancer — the interesting part
 
-```yaml
-services:
-  web1:
-    build: .
-    environment:
-      - SERVICE_NAME=web1
-    ports:
-      - "8001:8000"
+We implement 4 approaches, run them under the same load, and compare results. The point is to show we tried different things and understand the tradeoffs.
 
-  web2:
-    build: .
-    environment:
-      - SERVICE_NAME=web2
-    ports:
-      - "8002:8000"
+**Approach A — Round Robin** — already done. Blind rotation, ignores server state. Used as the baseline and fallback.
 
-  proxy:
-    build: ./proxy
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./logs:/app/logs
-    depends_on:
-      - web1
-      - web2
-```
+**Approach B — CPU aware via docker stats** — background loop polls every 5s using `aiodocker`. Routes to the least CPU loaded container. Falls back to round robin if data is stale.
+
+**Approach C — Active probing** — sends a cheap `/ping` to each container before routing, picks the fastest responder. Better for bursty traffic, worse under sustained load because of the probe overhead.
+
+**Approach D — Weighted score** — combines CPU, memory and active connections into a single score. Most nuanced but requires fresh docker stats data.
+
+The proxy container needs access to the Docker socket for approaches B and D. This is the same pattern used by tools like Portainer and Traefik — worth mentioning in the presentation.
+
+#### Benchmark plan
+Run each approach with locust: 200 users, 60s, same backend setup. Collect P50/P95/P99 latency, throughput and error rate. Save results to `benchmark/results/`. Expected conclusion: CPU-aware wins under sustained load, active probing wins for bursty traffic, weighted is most fair but adds complexity.
 
 ---
 
-## How to run
+### Request Tracing
 
-```bash
-docker compose up --build
-```
+Every request gets a unique ID at the proxy. Every step — received, queued, picked up by a worker, routed, responded — gets logged with that ID and a timestamp. This lets us reconstruct the full lifecycle of any request and makes the priority queue visible during the demo.
 
-### Test round robin through proxy
-```bash
-curl http://localhost:8080/hello
-curl http://localhost:8080/hello
-curl http://localhost:8080/hello
-```
-Should alternate between web1 and web2 in the response.
-
-### Test backends directly
-```bash
-curl http://localhost:8001/ping      # always web1
-curl http://localhost:8002/ping      # always web2
-curl http://localhost:8001/healthz
-curl http://localhost:8002/healthz
-```
-
-### Test concurrent connections
-```bash
-curl http://localhost:8002/healthz &
-curl http://localhost:8002/healthz &
-curl http://localhost:8002/healthz &
-```
-`active_connections` will show > 1 when requests overlap.
-
-### Watch proxy logs
-```bash
-docker compose logs -f proxy
-```
+We also add a `GET /trace/<id>` endpoint that returns the full timeline for a given request ID.
 
 ---
 
-## Week by week plan
+### Priority Queue
 
-### Week 1 — Foundation ✅
-- [x] Docker Compose with 2 backends + proxy
-- [x] Basic HTTP forwarding
-- [x] Hand-rolled round robin
-- [x] `X-Request-ID` trace ID on every request
-- [x] `X-Forwarded-For` header forwarding
-- [x] `/ping` and `/healthz` on backends with container ID
-- [x] Logging to file
+Every request enters an `asyncio.PriorityQueue` before being forwarded. N workers drain it. Priority is assigned by path prefix and can be overridden with an `X-Priority` header.
+
+| Tier | Priority | Routes |
+|---|---|---|
+| Critical | 1 | `/premium`, `/admin` |
+| Standard | 5 | `/api/*` |
+| Batch | 10 | `/export`, `/report`, everything else |
+
+Lower number = served first. When the queue is full the proxy returns 429 instead of growing unbounded.
+
+Also includes a circuit breaker per container — 3 failures in 10s marks it unhealthy and stops routing to it until it recovers.
+
+---
+
+### Observability
+
+`GET /metrics` — queue depth, requests per container, CPU per container, circuit breaker state, P95 latency per route.
+
+`GET /dashboard` — single HTML file served by the proxy, polls `/metrics` every second. Shows container load bars, queue depth, circuit breaker lights.
+
+`POST /admin/reload` — re-reads config without restarting. Add a container, hit reload, it immediately gets traffic.
+
+---
+
+## Week by week
+
+### Week 1 — Foundation 
+- [] Docker Compose with 2 backends + proxy
+- [] Basic HTTP forwarding
+- [] Hand-rolled round robin
+- [] `X-Request-ID` trace ID on every request
+- [] `X-Forwarded-For` header forwarding
+- [] `/ping` and `/healthz` on backends with container ID
+- [] Logging to file
+- [] /metrics endpoint (total requests, requests per container, errors per container, uptime)
+- [] /status endpoint with live reachability check per container
+- [] Startup health check before accepting traffic
+- [] Log rotation (2MB cap, 5 backups)
+- [] next_container skips unreachable containers
+- [] 503 when no containers available
+- [] query params preserved via rel_url
 
 ### Week 2 — Priority Queue + Circuit Breaker
 - [ ] `asyncio.PriorityQueue` with N workers
-- [ ] Priority assigned by path prefix (`/premium`=1, `/api`=5, everything else=10)
+- [ ] Priority assigned by path prefix
 - [ ] `X-Priority` header override
 - [ ] 429 when queue is full
-- [ ] Circuit breaker — 3 failures in 10s → stop routing to that backend
-- [ ] Tracer logs at every step (queued, dequeued, routed, responded)
+- [ ] Circuit breaker per container
+- [ ] Tracer logs at every step
 
-### Week 3 — Smart Load Balancing
-- [ ] Background health loop using `aiodocker` (reads real CPU from docker stats)
-- [ ] Approach A — round robin (already done, used as fallback)
-- [ ] Approach B — CPU aware (route to least loaded container)
-- [ ] Approach C — active probing (ping each container, pick fastest)
-- [ ] Approach D — weighted score (CPU + memory + connections)
+### Week 3 — Smart Load Balancing + Protocols
+- [ ] Background health loop via `aiodocker`
+- [ ] Approach B — CPU aware
+- [ ] Approach C — active probing
+- [ ] Approach D — weighted score
 - [ ] Stale data fallback to round robin
-- [ ] gRPC backend (surface level)
 - [ ] WebSocket support
+- [ ] gRPC backend (surface level)
+- [ ] Hot config reload
 
 ### Week 4 — Benchmark + Polish
-- [ ] Run locust for all 4 load balancing approaches, save results
+- [ ] Run locust for all 4 approaches, save results to `benchmark/results/`
 - [ ] Live dashboard at `/dashboard`
-- [ ] `/trace/<id>` endpoint — returns full timeline of a request
+- [ ] `/trace/<id>` endpoint
 - [ ] Stress test + fix bottlenecks
 - [ ] Demo prep
 
 ---
 
-## Demo scenarios (planned)
+## Demo scenarios
 
-1. **Priority** — flood with batch requests, inject critical ones mid-queue. Traces show critical finished first.
-2. **Load balancing benchmark** — run locust with round robin vs CPU aware, show the difference in a table.
-3. **Backend failure** — kill web1 mid-traffic, circuit breaker opens, traffic shifts to web2 automatically.
+1. **Priority** — flood with batch requests, inject critical ones mid-queue. Traces show critical finished first despite arriving later.
+2. **Load balancing benchmark** — run locust with round robin vs CPU aware, show the latency/throughput difference in a table.
+3. **Backend failure** — kill web1 mid-traffic, circuit breaker opens, traffic shifts to web2 automatically. Restart it — comes back into rotation.
 4. **Request trace** — hit `/trace/<id>` and show the full timeline of one request through the system.
+5. **Hot reload** — add web3 to config, call `/admin/reload`, immediately see it in the dashboard receiving traffic.
 
 ---
 
 ## Things to say in the presentation
 
 - **Why we benchmarked 4 load balancing approaches** — to understand the tradeoffs, not just pick one blindly. The benchmark is the proof we actually tried them.
-- **Why docker stats instead of self-reported health** — we observe containers from outside. More robust, works even if a backend is partially broken.
-- **Why hand-rolled round robin** — simple, no dependencies, easy to reason about. `itertools.cycle` hides the logic, a counter makes it explicit.
-- **Why request tracing from day one** — makes every decision demonstrable. Not just "it works" but "here's the proof".
+- **Why docker stats instead of self-reported health** — we observe containers from outside. More robust, works even if a backend is partially broken. Same pattern as Portainer and Traefik.
+- **Why health loop is decoupled from routing** — routing reads the last known CPU value, never blocks waiting for a health check. Clean separation.
+- **Why hand-rolled round robin** — simple, no dependencies, easy to reason about. Makes the logic explicit.
+- **Why request tracing from day one** — makes every decision demonstrable with real data. Not just "it works" but here's the proof.
 - **Why Python asyncio over Nginx/HAProxy** — right tool for the job. Nginx is great for TLS, not for custom priority queues.
