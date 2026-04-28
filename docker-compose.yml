@@ -1,0 +1,18 @@
+services:
+  web1:
+    build: .
+    environment:
+      - SERVICE_NAME=web1
+
+  web2:
+    build: .
+    environment:
+      - SERVICE_NAME=web2
+
+  nginx:
+    build: ./nginx
+    ports:
+      - "8080:80"
+    depends_on:
+      - web1
+      - web2
