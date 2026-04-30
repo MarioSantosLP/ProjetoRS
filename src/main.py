@@ -7,7 +7,13 @@ from fastapi import FastAPI, Request
 app = FastAPI()
 
 NAME = os.getenv("SERVICE_NAME", "web")
-CAPACITY = int(os.getenv("CAPACITY", "100"))
+try: #fix copilot suggesting non-integer values for capacity
+    CAPACITY = int(os.getenv("CAPACITY", "100"))
+except ValueError:
+    raise ValueError("CAPACITY must be a valid integer")
+
+if CAPACITY <= 0:
+    raise ValueError("CAPACITY must be greater than 0")
 active_connections = 0
 
 
