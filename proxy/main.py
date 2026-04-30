@@ -1,15 +1,17 @@
-import asyncio
+
 
 import logging
 import uuid
 import sys
 import time
+import os
 
 from aiohttp import web, ClientSession, ClientTimeout
 from logging.handlers import RotatingFileHandler
 
 #Logging (ts + msg) method used in lab7_8 (rotation idea from SO project)
 handler = RotatingFileHandler(
+    os.makedirs("logs", exist_ok=True) or "logs", #make logs dir if not exists
     filename=f"logs/{sys.argv[0]}.log",
     maxBytes= 2 * 1024 * 1024 , #rotates when log file reaches 2MB
     backupCount=5,
@@ -49,7 +51,7 @@ async def next_container() -> str | None:
         container = CONTAINERS[_rr_index % len(CONTAINERS)]
         _rr_index += 1
 
-        if await ping_container(container):
+        if await ping_container(container): #keep in mind i might change this when we add the other load balancers
             return container
 
         log.warning(f"Skipping unreachable container: {container}")
@@ -126,10 +128,24 @@ async def handle(request: web.Request) -> web.Response:
             ) as resp:
                 body = await resp.read()
                 log.info(f"[{req_id}] ← {resp.status} from {container}")
+                response_headers={
+                    key: value
+                    for key, value in resp.headers.items()
+                    if key.lower() not in {
+                        "connection",
+                        "keep-alive",
+                        "proxy-authenticate",
+                        "proxy-authorization",
+                        "te",
+                        "trailer",
+                        "transfer-encoding",
+                        "upgrade",
+                    }
+                }
                 return web.Response(
                     status=resp.status,
                     body=body,
-                    content_type="application/json",
+                    headers=response_headers,
                 )
 
     except Exception as e:
