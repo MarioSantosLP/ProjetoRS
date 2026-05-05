@@ -3,7 +3,7 @@ import time
 import asyncio
 import aiodocker
 
-from aiohttp import ClientSession, CClientTimeout
+from aiohttp import ClientSession, ClientTimeout
 
 log = logging.getLogger("load_balancer")
 
