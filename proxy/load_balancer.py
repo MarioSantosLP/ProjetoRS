@@ -30,6 +30,7 @@ def round_robin() -> str:
 container_stats: dict[str, dict] = {
     c: {
         "cpu": 0.0,
+        "mem": 0.0,
         "healthy": True,
         "last_seen": 0.0,
     }
@@ -45,9 +46,30 @@ probe_stats: dict[str, dict] = {
     for c in CONTAINERS
 }
 
+_active_connection: dict[str, int] = {c: 0 for c in CONTAINERS}
+
+def conn_acquired(container: str) -> None:
+    _active_connection[container] += 1
+
+def conn_released(container: str) -> None:
+    if _active_connection[container] > 0:
+        _active_connection[container] -= 1
+
+
 PROBE_TIMEOUT = 1
 PROBE_INTERVAL = 2
 PROBE_STALE = 6
+
+#define weight of each contst
+
+W_CPU = 0.4
+W_MEM = 0.3
+W_CONN = 0.3
+
+MAX_CONN = 100
+
+WEIGHTED_STATS_STALE = 15
+
 
 async def cpu_aware() -> str | None:
     now =time.monotonic() #monotonic is better than time for time interval
@@ -74,16 +96,16 @@ async def probe_container(session: ClientSession, container: str) ->None:
         ) as resp:
             healthy = resp.status == 200
             latency_ms = round((time.monotonic() - start) * 1000, 2)
-            probe_stats[container][latency_ms] = latency_ms
+            probe_stats[container]["latency_ms"] = latency_ms
             probe_stats[container]["healthy"] = healthy
             probe_stats[container]["last_seen"] = time.monotonic()
-    except Exception as e:
+    except Exception as e:  
         log.warning(f"Probe failed for {container}: {e}")
         probe_stats[container]["healthy"] = False
         probe_stats[container]["latency_ms"] = None
         probe_stats[container]["last_seen"] = time.monotonic()
 
-async def active_probe(session: ClientSession) -> None:
+async def active_probe(session: ClientSession) -> str | None:
     if session is not None:
         await asyncio.gather(*(probe_container(session, c) for c in CONTAINERS))
     now = time.monotonic()
@@ -106,6 +128,34 @@ async def active_probe_loop(session: ClientSession) -> None:
         )
 
         await asyncio.sleep(PROBE_INTERVAL)
+
+
+async def weighted_stats() -> str | None:
+    now = time.monotonic()
+
+    fresh = [
+        c for c in CONTAINERS
+        if container_stats[c]["healthy"]
+        and now - container_stats[c]["last_seen"] < WEIGHTED_STATS_STALE
+    ]
+
+    if not fresh:
+        log.warning("No healthy containers with fresh stats for weighted selection, falling back to round robin")
+        return round_robin()
+    
+
+    def score(container:str) -> float:
+        cpu_score = container_stats[container]["cpu"] / 100
+        mem_score = container_stats[container]["mem"] / 100
+        conn_score = min(_active_connection[container] / MAX_CONN, 1.0)
+
+        return W_CPU * cpu_score + W_MEM * mem_score + W_CONN * conn_score
+    
+    scores = {c: score(c) for c in fresh}
+    best = min(scores, key=lambda c: scores[c]) #get cont with lowest score
+    return best
+
+    
 
 
 async def health_loop()-> None:
@@ -148,11 +198,19 @@ async def health_loop()-> None:
                     container_stats[container]["cpu"] = round(cpu, 2)
                     container_stats[container]["healthy"] = True
                     container_stats[container]["last_seen"] = time.monotonic()
+
+                    #mem calc
+
+                    mem_stats = stats["memory_stats"]
+                    mem_usage  = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
+                    mem_limit  = mem_stats.get("limit", 1)  # bytes; avoid /0
+                    mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
+    
                 except Exception as e:
                     log.warning(f"Failed to get stats for {container}: {e}")
                     container_stats[container]["healthy"] = False
 
             await asyncio.sleep(5) #wait 5s before next check
 
-
-
+if __name__ == "__main__":
+    asyncio.run(health_loop())
