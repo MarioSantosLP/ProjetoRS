@@ -3,6 +3,8 @@ import time
 import asyncio
 import aiodocker
 
+from aiohttp import ClientSession, CClientTimeout
+
 log = logging.getLogger("load_balancer")
 
 CONTAINERS = [
@@ -34,6 +36,19 @@ container_stats: dict[str, dict] = {
     for c in CONTAINERS
 }
 
+probe_stats: dict[str, dict] = {
+    c: {
+        "healthy": False,
+        "latency_ms": None,
+        "last_seen": 0.0,
+    }
+    for c in CONTAINERS
+}
+
+PROBE_TIMEOUT = 1
+PROBE_INTERVAL = 2
+PROBE_STALE = 6
+
 async def cpu_aware() -> str | None:
     now =time.monotonic() #monotonic is better than time for time interval
 
@@ -48,6 +63,50 @@ async def cpu_aware() -> str | None:
         return round_robin()
     
     return min(fresh, key=lambda c: container_stats[c]["cpu"]) #get cont with lowest cpu usage
+
+async def probe_container(session: ClientSession, container: str) ->None:
+    start = time.monotonic()
+    try:
+        async with session.get(
+            f"{container}/ping",
+            timeout=ClientTimeout(total=PROBE_TIMEOUT)
+        
+        ) as resp:
+            healthy = resp.status == 200
+            latency_ms = round((time.monotonic() - start) * 1000, 2)
+            probe_stats[container][latency_ms] = latency_ms
+            probe_stats[container]["healthy"] = healthy
+            probe_stats[container]["last_seen"] = time.monotonic()
+    except Exception as e:
+        log.warning(f"Probe failed for {container}: {e}")
+        probe_stats[container]["healthy"] = False
+        probe_stats[container]["latency_ms"] = None
+        probe_stats[container]["last_seen"] = time.monotonic()
+
+async def active_probe(session: ClientSession) -> None:
+    if session is not None:
+        await asyncio.gather(*(probe_container(session, c) for c in CONTAINERS))
+    now = time.monotonic()
+    fresh= [c for c in CONTAINERS
+         if probe_stats[c]["healthy"] and probe_stats[c]["latency_ms"] is not None 
+         and now - probe_stats[c]["last_seen"] < PROBE_STALE]
+        
+    if not fresh:
+        log.warning("No healthy containers with fresh probe data")
+        return round_robin()
+        
+    return min(fresh, key=lambda c: probe_stats[c]["latency_ms"]) #get cont with lowest latency
+
+async def active_probe_loop(session: ClientSession) -> None:
+    log.info("Starting active probing loop")
+
+    while True:
+        await asyncio.gather(
+            *(probe_container(session, container) for container in CONTAINERS)
+        )
+
+        await asyncio.sleep(PROBE_INTERVAL)
+
 
 async def health_loop()-> None:
 
