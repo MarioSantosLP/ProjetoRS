@@ -3,5 +3,5 @@ WORKDIR /app
 RUN pip install aiohttp --no-cache-dir
 RUN pip install aiohttp aiodocker --no-cache-dir
 RUN mkdir -p logs
-COPY main.py .
+COPY main.py priority_queue.py circuit.py ./
 CMD ["python", "main.py"]
