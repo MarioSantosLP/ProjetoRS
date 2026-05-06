@@ -63,11 +63,13 @@ An async reverse proxy in Python that:
 ```
 ProjetoRS/
 ├── src/
-│   └── main.py          # dummy backend
+│   └── main.py               # dummy backend
 ├── proxy/
-│   ├── main.py          # proxy core
+│   ├── main.py               # proxy core
+|   ├── priority_queue.py     # priority logic
+|   ├── circuit.py            # state by container  
 │   └── Dockerfile
-├── logs/                # proxy logs, rotates at 2MB
+├── logs/                     # proxy logs, rotates at 2MB
 ├── docker-compose.yml
 └── Dockerfile
 ```

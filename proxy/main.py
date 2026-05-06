@@ -6,6 +6,8 @@ import os
 
 from aiohttp import web, ClientSession, ClientTimeout
 from logging.handlers import RotatingFileHandler
+from priority_queue import enqueue, startup_queue, shutdown_queue
+from circuit import CircuitBreaker
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
 
@@ -33,7 +35,7 @@ CONTAINERS = [
 
 #metrics created more for demonstration 
 error_count = {container : 0 for container in CONTAINERS}
-request_count ={container : 0 for container in CONTAINERS}
+request_count = {container : 0 for container in CONTAINERS}
 total_requests = 0
 start_time = time.time()
 
@@ -60,6 +62,8 @@ HOP_BY_HOP_HEADERS = {
 # Round robin could have used itertools.cycle
 _rr_index = 0
 
+circuit_breakers = {c: CircuitBreaker() for c in CONTAINERS}
+
 async def next_container(app: web.Application) -> str | None:
     global _rr_index
 
@@ -67,9 +71,14 @@ async def next_container(app: web.Application) -> str | None:
         container = CONTAINERS[_rr_index % len(CONTAINERS)]
         _rr_index += 1
 
+        if circuit_breakers[container].is_open():
+            log.warning(f"Skipping {container} — circuit open")
+            continue
+
         if await ping_container(app, container): #keep in mind i might change this when we add the other load balancers
             return container
 
+        circuit_breakers[container].record_failure()
         log.warning(f"Skipping unreachable container: {container}")
 
     return None
@@ -108,6 +117,9 @@ async def ping_container(app: web.Application, container: str, force: bool = Fal
 async def startup_session(app: web.Application) -> None:
     app["session"] = ClientSession()
 
+async def startup_forward(app: web.Application) -> None:
+    app["forward"] = forward
+
 async def close_session(app: web.Application) -> None:
     await app["session"].close()
 
@@ -118,35 +130,40 @@ async def startup_health_check(app: web.Application) -> None:
         log.info(f"{container} {'reachable' if reachable else 'unreachable'}")
 
 async def status(request: web.Request) -> web.Response:
-    containers = [
-        {"container": c, "reachable": await ping_container(request.app, c, force=True)}
-        for c in CONTAINERS
-    ]
+    containers = []
+    for c in CONTAINERS:
+        circuit = circuit_breakers[c].current_state  # read before ping so half_open is visible
+        reachable = await ping_container(request.app, c, force=True)
+        containers.append({
+            "container": c,
+            "reachable": reachable,
+            "circuit": circuit,
+        })
     return web.json_response({
         "load_balancer": LOAD_BALANCER,
         "containers": containers,
     })
 
 async def handle(request: web.Request) -> web.Response:
-
     global total_requests
-    # give ID to this request
     req_id = str(uuid.uuid4())[:8]
+    body = await request.read()  # must read here — stream can't be consumed inside the worker
+    total_requests += 1
+    log.info(f"[{req_id}] {request.method} {request.path} (from {request.remote})")
+    return await enqueue(request.app, request, body, req_id)
 
-    # load balance the containers
-    container = await next_container(request.app) #also make it wait for ping
+async def forward(app: web.Application, request: web.Request, body: bytes, req_id: str) -> web.Response:
+    container = await next_container(app)
 
     if container is None:
         log.error(f"[{req_id}] No available containers")
         return web.Response(status=503, text="No available containers")
-    
+
     request_count[container] += 1
-    total_requests += 1
 
-    log.info(f"[{req_id}] {request.method} {request.path} → {container} (from {request.remote})")
+    log.info(f"[{req_id}] {request.method} {request.path} → {container}")
 
-    
-    url = f"{container}{request.rel_url}" #better to use rel_url to keep query params  (?id=10 ) for example
+    url = f"{container}{request.rel_url}"  # rel_url preserves query params (?id=10)
 
     incoming_headers = {
         key: value
@@ -165,40 +182,42 @@ async def handle(request: web.Request) -> web.Response:
     incoming_headers["X-Request-ID"] = req_id
     incoming_headers["X-Forwarded-For"] = x_forwarded_for
 
-    # Forward the request, passing id
     try:
-        session = request.app["session"]
+        session = app["session"]
         async with session.request(
             method=request.method,
             url=url,
             headers=incoming_headers,
-            data=await request.read(),
+            data=body,
             timeout=ClientTimeout(total=10),
         ) as resp:
-            body = await resp.read()
+            resp_body = await resp.read()
             log.info(f"[{req_id}] ← {resp.status} from {container}")
-            response_headers={
+            circuit_breakers[container].record_success()
+            response_headers = {
                 key: value
                 for key, value in resp.headers.items()
                 if key.lower() not in HOP_BY_HOP_HEADERS
             }
             return web.Response(
                 status=resp.status,
-                body=body,
+                body=resp_body,
                 headers=response_headers,
             )
 
     except Exception as e:
         error_count[container] += 1
         log.error(f"[{req_id}] Failed to reach {container}: {e}")
+        circuit_breakers[container].record_failure()
         return web.Response(status=502, text="Container unavailable")
-
-
 
 
 app = web.Application()
 app.on_startup.append(startup_session)
-app.on_startup.append(startup_health_check) #basically for debug 
+app.on_startup.append(startup_forward)
+app.on_startup.append(startup_queue)
+app.on_startup.append(startup_health_check)  # basically for debug
+app.on_cleanup.append(shutdown_queue)
 app.on_cleanup.append(close_session)
 app.router.add_get("/metrics", metrics)
 app.router.add_get("/status", status)
