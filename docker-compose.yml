@@ -4,20 +4,35 @@ services:
     environment:
       - SERVICE_NAME=web1
     ports:
-      - "8001:8000" #expose for testing
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   web2:
     build: .
     environment:
       - SERVICE_NAME=web2
     ports:
-      - "8002:8000" 
+      - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   proxy:
       build: ./proxy
       ports:
-        - "8080:8080" #only expose proxy to host
+        - "8080:8080"
       volumes:
         - ./logs:/app/logs
       depends_on:
-        - web1
-        - web2
+        web1:
+          condition: service_healthy
+        web2:
+          condition: service_healthy
