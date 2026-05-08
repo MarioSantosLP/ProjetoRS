@@ -4,6 +4,10 @@ import sys
 import time
 import os
 
+import grpc
+import service_pb2
+import service_pb2_grpc
+
 from aiohttp import web, ClientSession, ClientTimeout
 from logging.handlers import RotatingFileHandler
 from priority_queue import enqueue, startup_queue, shutdown_queue
@@ -160,57 +164,40 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         return web.Response(status=503, text="No available containers")
 
     request_count[container] += 1
+    log.info(f"[{req_id}] {request.method} {request.path} → {container} (gRPC)")
 
-    log.info(f"[{req_id}] {request.method} {request.path} → {container}")
+    # converte o host HTTP para endereço gRPC (porta 50051)
+    grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
 
-    url = f"{container}{request.rel_url}"  # rel_url preserves query params (?id=10)
-
-    incoming_headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS
+    # filtra headers hop-by-hop
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP_HEADERS
     }
 
-    existing_xff = request.headers.get("X-Forwarded-For")
-    client_ip = request.remote or ""
-
-    if existing_xff and client_ip:
-        x_forwarded_for = f"{existing_xff}, {client_ip}"
-    else:
-        x_forwarded_for = existing_xff or client_ip
-
-    incoming_headers["X-Request-ID"] = req_id
-    incoming_headers["X-Forwarded-For"] = x_forwarded_for
-
     try:
-        session = app["session"]
-        async with session.request(
-            method=request.method,
-            url=url,
-            headers=incoming_headers,
-            data=body,
-            timeout=ClientTimeout(total=10),
-        ) as resp:
-            resp_body = await resp.read()
-            log.info(f"[{req_id}] ← {resp.status} from {container}")
+        async with grpc.aio.insecure_channel(grpc_host) as channel:
+            stub = service_pb2_grpc.WebServiceStub(channel)
+            grpc_request = service_pb2.HttpRequest(
+                method=request.method,
+                path=request.path,
+                body=body,
+                headers=headers,
+            )
+            grpc_response = await stub.HandleRequest(grpc_request)
             circuit_breakers[container].record_success()
-            response_headers = {
-                key: value
-                for key, value in resp.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS
-            }
+            log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
             return web.Response(
-                status=resp.status,
-                body=resp_body,
-                headers=response_headers,
+                status=grpc_response.status,
+                body=grpc_response.body,
+                headers=dict(grpc_response.headers),
             )
 
     except Exception as e:
         error_count[container] += 1
-        log.error(f"[{req_id}] Failed to reach {container}: {e}")
         circuit_breakers[container].record_failure()
+        log.error(f"[{req_id}] gRPC failed for {container}: {e}")
         return web.Response(status=502, text="Container unavailable")
-
 
 app = web.Application()
 app.on_startup.append(startup_session)
