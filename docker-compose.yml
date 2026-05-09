@@ -18,6 +18,7 @@ services:
         - "8080:8080" #only expose proxy to host
       volumes:
         - ./logs:/app/logs
+        - /var/run/docker.sock:/var/run/docker.sock # allow proxy to read container stats via Docker API
       depends_on:
         - web1
         - web2

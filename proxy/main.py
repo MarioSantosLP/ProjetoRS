@@ -3,9 +3,10 @@ import uuid
 import sys
 import time
 import os
-
+import load_balancer as lb
 from aiohttp import web, ClientSession, ClientTimeout
 from logging.handlers import RotatingFileHandler
+import asyncio
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
 
@@ -38,7 +39,7 @@ total_requests = 0
 start_time = time.time()
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "round_robin"
+LOAD_BALANCER = "active_probe"
 
 HEALTH_TTL = 3
 health_cache = {
@@ -61,18 +62,29 @@ HOP_BY_HOP_HEADERS = {
 _rr_index = 0
 
 async def next_container(app: web.Application) -> str | None:
-    global _rr_index
+    session = app["session"]
+    algorithm = LOAD_BALANCER
+    log.debug(f"Using load balancer algorithm: {algorithm}")  # log which algorithm is being used
 
-    for _ in range(len(CONTAINERS)):
-        container = CONTAINERS[_rr_index % len(CONTAINERS)]
-        _rr_index += 1
+    if algorithm == "round_robin":
+        container = lb.round_robin()
+    elif algorithm == "cpu_aware":
+        container = await lb.cpu_aware()
+    elif algorithm == "active_probe":
+        container = await lb.active_probe(session)
+    elif algorithm == "weighted":
+        container = await lb.weighted_stats()
+    else:
+        container = lb.round_robin()
 
-        if await ping_container(app, container): #keep in mind i might change this when we add the other load balancers
-            return container
+    if container is None:
+        return None
 
+    if not await ping_container(app, container):
         log.warning(f"Skipping unreachable container: {container}")
+        return None
 
-    return None
+    return container
 
 async def metrics(request: web.Request) -> web.Response:
     return web.json_response({
@@ -193,12 +205,16 @@ async def handle(request: web.Request) -> web.Response:
         log.error(f"[{req_id}] Failed to reach {container}: {e}")
         return web.Response(status=502, text="Container unavailable")
 
-
+async def startup_lb_loops(app: web.Application) -> None:
+    asyncio.ensure_future(lb.health_loop())
+    asyncio.ensure_future(lb.active_probe_loop(app["session"]))
+    log.info("Load balancer loops started")
 
 
 app = web.Application()
 app.on_startup.append(startup_session)
 app.on_startup.append(startup_health_check) #basically for debug 
+app.on_startup.append(startup_lb_loops) # start load balancer background loops on startup
 app.on_cleanup.append(close_session)
 app.router.add_get("/metrics", metrics)
 app.router.add_get("/status", status)
