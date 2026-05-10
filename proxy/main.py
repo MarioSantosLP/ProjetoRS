@@ -39,7 +39,7 @@ total_requests = 0
 start_time = time.time()
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "active_probe"
+LOAD_BALANCER = "round_robin"
 
 HEALTH_TTL = 3
 health_cache = {
