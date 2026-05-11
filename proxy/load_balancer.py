@@ -122,8 +122,7 @@ async def probe_container(session: ClientSession, container: str) ->None:
 
 async def active_probe(session: ClientSession, pool: list[str] | None = None) -> str | None:
     candidates = pool if pool is not None else CONTAINERS
-    if session is not None:
-        await asyncio.gather(*(probe_container(session, c) for c in candidates))
+    # Read from the cache kept fresh by active_probe_loop — no inline probing on the hot path
     now = time.monotonic()
     fresh = [
         c for c in candidates

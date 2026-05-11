@@ -60,5 +60,7 @@ class CircuitBreaker:
 
     @property
     def current_state(self) -> str:
-        self.is_open()  # trigger OPEN → HALF_OPEN transition if timeout expired
-        return self.state    
+        # Pure read — no side effects. Mirrors the OPEN→HALF_OPEN logic without mutating state.
+        if self.state == self.OPEN and time.time() - self.opened_at >= RECOVERY_TIMEOUT:
+            return self.HALF_OPEN
+        return self.state

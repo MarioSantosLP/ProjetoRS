@@ -61,12 +61,9 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 
-# Round robin could have used itertools.cycle
-_rr_index = 0
-
 circuit_breakers = {c: CircuitBreaker() for c in CONTAINERS}
 
-# --- Request tracing ---
+
 # Keeps the last 500 request timelines in memory (older ones are evicted automatically)
 TRACE_MAX = 500
 _traces: collections.OrderedDict[str, list[dict]] = collections.OrderedDict()
@@ -81,46 +78,6 @@ def trace(req_id: str, component: str, event: str, **kwargs) -> None:
     _traces[req_id].append(entry)
     log.debug(f"[{req_id}] {component} {event} {' '.join(f'{k}={v}' for k,v in kwargs.items())}")
 
-async def next_container(app: web.Application) -> str | None:
-    session = app["session"]
-    algorithm = LOAD_BALANCER
-    log.debug(f"Using load balancer algorithm: {algorithm}")
-
-    tried = set()
-
-    for _ in range(len(CONTAINERS)):
-        if algorithm == "round_robin":
-            container = lb.round_robin()
-        elif algorithm == "cpu_aware":
-            container = await lb.cpu_aware()
-        elif algorithm == "active_probe":
-            container = await lb.active_probe(session)
-        elif algorithm == "weighted":
-            container = await lb.weighted_stats()
-        else:
-            container = lb.round_robin()
-
-
-            if container is None:
-                continue
-
-            if container in tried:
-                container = lb.round_robin()  # fallback to round robin if chosen algo fails
-
-                if container in tried:
-                    continue
-
-        if circuit_breakers[container].is_open():
-            log.warning(f"Skipping {container} — circuit open")
-            return None
-
-        if not await ping_container(app, container):
-            circuit_breakers[container].record_failure()
-            log.warning(f"Skipping unreachable container: {container}")
-            return None
-
-        return container
-    return None
 
 async def metrics(request: web.Request) -> web.Response:
     return web.json_response({
