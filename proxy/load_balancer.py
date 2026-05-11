@@ -92,7 +92,7 @@ async def cpu_aware(pool: list[str] | None = None) -> str | None:
     fresh = [
         c for c in candidates
         if container_stats[c]["healthy"]
-        and now - container_stats[c]["last_seen"] < 15
+        and now - container_stats[c]["last_seen"] < WEIGHTED_STATS_STALE
     ]
 
     if not fresh:
