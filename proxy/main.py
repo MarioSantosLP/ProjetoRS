@@ -76,7 +76,12 @@ def trace(req_id: str, component: str, event: str, **kwargs) -> None:
         _traces[req_id] = []
     entry = {"ts": round(time.monotonic(), 4), "component": component, "event": event, **kwargs}
     _traces[req_id].append(entry)
-    log.debug(f"[{req_id}] {component} {event} {' '.join(f'{k}={v}' for k,v in kwargs.items())}")
+    if log.isEnabledFor(logging.DEBUG):
+        details = " ".join(f"{k}={v}" for k, v in kwargs.items())
+        if details:
+            log.debug("[%s] %s %s %s", req_id, component, event, details)
+        else:
+            log.debug("[%s] %s %s", req_id, component, event)
 
 
 async def metrics(request: web.Request) -> web.Response:
