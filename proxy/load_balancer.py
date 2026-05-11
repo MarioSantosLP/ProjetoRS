@@ -17,11 +17,18 @@ DOCKER_NAMES = {
     "http://web2:8000": "projetors-web2-1",
 }
 
+# role assign
+CONTAINER_ROLES: dict[str, str] = {
+    "http://web1:8000": "cpu",
+    "http://web2:8000": "memory",
+}
+
 _rr_index = 0
 
-def round_robin() -> str:
+def round_robin(pool: list[str] | None = None) -> str:
     global _rr_index
-    container = CONTAINERS[_rr_index % len(CONTAINERS)]
+    candidates = pool if pool is not None else CONTAINERS
+    container = candidates[_rr_index % len(candidates)]
     _rr_index += 1
     return container
 
@@ -57,10 +64,17 @@ def conn_released(container: str) -> None:
 
 
 PROBE_TIMEOUT = 1
-PROBE_INTERVAL = 2
+PROBE_INTERVAL = 2      
 PROBE_STALE = 6
 
 #define weight of each contst
+
+#tarefas mais tasking para memoria ou para cpu 
+#ter containers para cpu e mem e o cliente diz se é mem intensive ou cpu 
+#temos um byte no pedido com esta infromação 
+#e o load balancer escolhe o melhor container para o pedido com base nisso
+#create chaos demos aswell
+
 
 W_CPU = 0.4
 W_MEM = 0.3
@@ -71,20 +85,21 @@ MAX_CONN = 100
 WEIGHTED_STATS_STALE = 15
 
 
-async def cpu_aware() -> str | None:
-    now =time.monotonic() #monotonic is better than time for time interval
+async def cpu_aware(pool: list[str] | None = None) -> str | None:
+    candidates = pool if pool is not None else CONTAINERS
+    now = time.monotonic()
 
     fresh = [
-        c for c in CONTAINERS
+        c for c in candidates
         if container_stats[c]["healthy"]
-        and now - container_stats[c]["last_seen"] < 15 #stats are fresh if seen in the last 15s
+        and now - container_stats[c]["last_seen"] < WEIGHTED_STATS_STALE
     ]
 
     if not fresh:
         log.warning("No healthy containers with fresh stats, falling back to round robin")
-        return round_robin()
-    
-    return min(fresh, key=lambda c: container_stats[c]["cpu"]) #get cont with lowest cpu usage
+        return round_robin(candidates)
+
+    return min(fresh, key=lambda c: container_stats[c]["cpu"])
 
 async def probe_container(session: ClientSession, container: str) ->None:
     start = time.monotonic()
@@ -105,19 +120,21 @@ async def probe_container(session: ClientSession, container: str) ->None:
         probe_stats[container]["latency_ms"] = None
         probe_stats[container]["last_seen"] = time.monotonic()
 
-async def active_probe(session: ClientSession) -> str | None:
-    if session is not None:
-        await asyncio.gather(*(probe_container(session, c) for c in CONTAINERS))
+async def active_probe(session: ClientSession, pool: list[str] | None = None) -> str | None:
+    candidates = pool if pool is not None else CONTAINERS
+    # Read from the cache kept fresh by active_probe_loop — no inline probing on the hot path
     now = time.monotonic()
-    fresh= [c for c in CONTAINERS
-         if probe_stats[c]["healthy"] and probe_stats[c]["latency_ms"] is not None 
-         and now - probe_stats[c]["last_seen"] < PROBE_STALE]
-        
+    fresh = [
+        c for c in candidates
+        if probe_stats[c]["healthy"] and probe_stats[c]["latency_ms"] is not None
+        and now - probe_stats[c]["last_seen"] < PROBE_STALE
+    ]
+
     if not fresh:
         log.warning("No healthy containers with fresh probe data")
-        return round_robin()
-        
-    return min(fresh, key=lambda c: probe_stats[c]["latency_ms"]) #get cont with lowest latency
+        return round_robin(candidates)
+
+    return min(fresh, key=lambda c: probe_stats[c]["latency_ms"])
 
 async def active_probe_loop(session: ClientSession) -> None:
     log.info("Starting active probing loop")
@@ -130,32 +147,61 @@ async def active_probe_loop(session: ClientSession) -> None:
         await asyncio.sleep(PROBE_INTERVAL)
 
 
-async def weighted_stats() -> str | None:
+async def weighted_stats(pool: list[str] | None = None) -> str | None:
+    candidates = pool if pool is not None else CONTAINERS
     now = time.monotonic()
 
     fresh = [
-        c for c in CONTAINERS
+        c for c in candidates
         if container_stats[c]["healthy"]
         and now - container_stats[c]["last_seen"] < WEIGHTED_STATS_STALE
     ]
 
     if not fresh:
         log.warning("No healthy containers with fresh stats for weighted selection, falling back to round robin")
-        return round_robin()
-    
+        return round_robin(candidates)
 
-    def score(container:str) -> float:
+    def score(container: str) -> float:
         cpu_score = container_stats[container]["cpu"] / 100
         mem_score = container_stats[container]["mem"] / 100
         conn_score = min(_active_connection[container] / MAX_CONN, 1.0)
-
         return W_CPU * cpu_score + W_MEM * mem_score + W_CONN * conn_score
-    
-    scores = {c: score(c) for c in fresh}
-    best = min(scores, key=lambda c: scores[c]) #get cont with lowest score
-    return best
+
+    return min(fresh, key=score)
 
     
+
+
+def _candidates_for_workload(workload_type: str | None) -> list[str]:
+   
+    if workload_type not in ("cpu", "memory"):
+        return CONTAINERS  # no preference — full pool
+
+    matched = [c for c in CONTAINERS if CONTAINER_ROLES.get(c) == workload_type]
+    if matched:
+        return matched
+
+    log.warning(f"No containers with role '{workload_type}', falling back to full pool")
+    return CONTAINERS
+
+
+async def pick_by_role(workload_type: str | None, algorithm: str, session=None) -> str | None:
+    
+    pool = _candidates_for_workload(workload_type)
+
+    if algorithm == "round_robin":
+        result = round_robin(pool)
+    elif algorithm == "cpu_aware":
+        result = await cpu_aware(pool)
+    elif algorithm == "active_probe":
+        result = await active_probe(session, pool)
+    elif algorithm == "weighted":
+        result = await weighted_stats(pool)
+    else:
+        result = round_robin(pool)
+
+    log.debug(f"pick_by_role workload={workload_type} algo={algorithm} → {result}")
+    return result
 
 
 async def health_loop()-> None:
@@ -205,6 +251,7 @@ async def health_loop()-> None:
                     mem_usage  = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
                     mem_limit  = mem_stats.get("limit", 1)  # bytes; avoid /0
                     mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
+                    container_stats[container]["mem"] = round(mem, 2)
     
                 except Exception as e:
                     log.warning(f"Failed to get stats for {container}: {e}")
