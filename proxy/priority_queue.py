@@ -11,8 +11,8 @@ PRIORITY_CRITICAL = 1
 PRIORITY_STANDARD = 5
 PRIORITY_BATCH    = 10
 
-QUEUE_MAX_SIZE = 10000
-NUM_WORKERS    = 20
+QUEUE_MAX_SIZE = 100
+NUM_WORKERS    = 5
 
 # Tiebreaker so same-priority requests are served FIFO
 _counter = itertools.count()
