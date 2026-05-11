@@ -73,6 +73,7 @@ async def enqueue(app: web.Application, request: web.Request, body: bytes, req_i
 
     if queue.full():
         log.warning(f"[{req_id}] Queue full — rejecting request")
+        log.info(f"[{req_id}] ← 429 from proxy")
         return web.Response(status=429, text="Too many requests")
 
     priority = get_priority(request)
