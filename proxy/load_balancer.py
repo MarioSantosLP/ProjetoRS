@@ -57,10 +57,17 @@ def conn_released(container: str) -> None:
 
 
 PROBE_TIMEOUT = 1
-PROBE_INTERVAL = 2
+PROBE_INTERVAL = 2      
 PROBE_STALE = 6
 
 #define weight of each contst
+
+#tarefas mais tasking para memoria ou para cpu 
+#ter containers para cpu e mem e o cliente diz se é mem intensive ou cpu 
+#temos um byte no pedido com esta infromação 
+#e o load balancer escolhe o melhor container para o pedido com base nisso
+#create chaos demos aswell
+
 
 W_CPU = 0.4
 W_MEM = 0.3
@@ -205,6 +212,7 @@ async def health_loop()-> None:
                     mem_usage  = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
                     mem_limit  = mem_stats.get("limit", 1)  # bytes; avoid /0
                     mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
+                    container_stats[container]["mem"] = round(mem, 2)
     
                 except Exception as e:
                     log.warning(f"Failed to get stats for {container}: {e}")

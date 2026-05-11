@@ -70,30 +70,41 @@ async def next_container(app: web.Application) -> str | None:
     algorithm = LOAD_BALANCER
     log.debug(f"Using load balancer algorithm: {algorithm}")
 
-    if algorithm == "round_robin":
-        container = lb.round_robin()
-    elif algorithm == "cpu_aware":
-        container = await lb.cpu_aware()
-    elif algorithm == "active_probe":
-        container = await lb.active_probe(session)
-    elif algorithm == "weighted":
-        container = await lb.weighted_stats()
-    else:
-        container = lb.round_robin()
+    tried = set()
 
-    if container is None:
-        return None
+    for _ in range(len(CONTAINERS)):
+        if algorithm == "round_robin":
+            container = lb.round_robin()
+        elif algorithm == "cpu_aware":
+            container = await lb.cpu_aware()
+        elif algorithm == "active_probe":
+            container = await lb.active_probe(session)
+        elif algorithm == "weighted":
+            container = await lb.weighted_stats()
+        else:
+            container = lb.round_robin()
 
-    if circuit_breakers[container].is_open():
-        log.warning(f"Skipping {container} — circuit open")
-        return None
 
-    if not await ping_container(app, container):
-        circuit_breakers[container].record_failure()
-        log.warning(f"Skipping unreachable container: {container}")
-        return None
+            if container is None:
+                continue
 
-    return container
+            if container in tried:
+                container = lb.round_robin()  # fallback to round robin if chosen algo fails
+
+                if container in tried:
+                    continue
+
+        if circuit_breakers[container].is_open():
+            log.warning(f"Skipping {container} — circuit open")
+            return None
+
+        if not await ping_container(app, container):
+            circuit_breakers[container].record_failure()
+            log.warning(f"Skipping unreachable container: {container}")
+            return None
+
+        return container
+    return None
 
 async def metrics(request: web.Request) -> web.Response:
     return web.json_response({
