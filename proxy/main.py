@@ -3,6 +3,9 @@ import uuid
 import sys
 import time
 import os
+import grpc
+import service_pb2
+import service_pb2_grpc
 import collections
 import load_balancer as lb
 from aiohttp import web, ClientSession, ClientTimeout
@@ -42,7 +45,7 @@ total_requests = 0
 start_time = time.time()
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "round_robin"
+LOAD_BALANCER = "active_probe"
 
 HEALTH_TTL = 3
 health_cache = {
@@ -186,58 +189,43 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
 
     log.info(f"[{req_id}] {request.method} {request.path} → {container} (workload={workload_type or 'any'})")
 
-    url = f"{container}{request.rel_url}"  # rel_url preserves query params (?id=10)
-
-    incoming_headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in HOP_BY_HOP_HEADERS
+    # filtra headers hop-by-hop
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP_HEADERS
     }
 
-    existing_xff = request.headers.get("X-Forwarded-For")
-    client_ip = request.remote or ""
-
-    if existing_xff and client_ip:
-        x_forwarded_for = f"{existing_xff}, {client_ip}"
-    else:
-        x_forwarded_for = existing_xff or client_ip
-
-    incoming_headers["X-Request-ID"] = req_id
-    incoming_headers["X-Forwarded-For"] = x_forwarded_for
+    # converte o host HTTP para endereço gRPC (porta 50051)
+    grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
 
     try:
-        session = app["session"]
         t_sent = time.monotonic()
-        async with session.request(
-            method=request.method,
-            url=url,
-            headers=incoming_headers,
-            data=body,
-            timeout=ClientTimeout(total=10),
-        ) as resp:
-            resp_body = await resp.read()
+        async with grpc.aio.insecure_channel(grpc_host) as channel:
+            stub = service_pb2_grpc.WebServiceStub(channel)
+            grpc_request = service_pb2.HttpRequest(
+                method=request.method,
+                path=request.path,
+                body=body,
+                headers=headers,
+            )
+            grpc_response = await stub.HandleRequest(grpc_request)
             elapsed_ms = round((time.monotonic() - t_start) * 1000)
             backend_ms = round((time.monotonic() - t_sent) * 1000)
-            log.info(f"[{req_id}] ← {resp.status} from {container}")
             circuit_breakers[container].record_success()
-            trace(req_id, "proxy", "responded", status=resp.status,
+            log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
+            trace(req_id, "proxy", "responded", status=grpc_response.status,
                   total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
-            response_headers = {
-                key: value
-                for key, value in resp.headers.items()
-                if key.lower() not in HOP_BY_HOP_HEADERS
-            }
             return web.Response(
-                status=resp.status,
-                body=resp_body,
-                headers=response_headers,
+                status=grpc_response.status,
+                body=grpc_response.body,
+                headers=dict(grpc_response.headers),
             )
 
     except Exception as e:
         error_count[container] += 1
-        log.error(f"[{req_id}] Failed to reach {container}: {e}")
         circuit_breakers[container].record_failure()
         trace(req_id, "proxy", "error", container=container, error=str(e))
+        log.error(f"[{req_id}] gRPC failed for {container}: {e}")
         return web.Response(status=502, text="Container unavailable")
 
 async def trace_endpoint(request: web.Request) -> web.Response:

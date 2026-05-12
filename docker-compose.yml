@@ -5,6 +5,7 @@ services:
       - SERVICE_NAME=web1
     ports:
       - "8001:8000"
+      - "50051:50051"  # gRPC
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
       interval: 5s
@@ -18,6 +19,7 @@ services:
       - SERVICE_NAME=web2
     ports:
       - "8002:8000"
+      - "50052:50051"  # gRPC
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
       interval: 5s

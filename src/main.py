@@ -4,6 +4,14 @@ import random
 import socket
 from fastapi import FastAPI, Request
 
+import json
+import grpc
+import sys
+
+sys.path.insert(0, "/app")
+import service_pb2
+import service_pb2_grpc
+
 app = FastAPI()
 
 NAME = os.getenv("SERVICE_NAME", "web")
@@ -58,3 +66,30 @@ async def handle(request: Request, path: str):
         "path": f"/{path}",
         "method": request.method,
     }
+
+# --- gRPC ---
+
+class WebServiceServicer(service_pb2_grpc.WebServiceServicer):
+    async def HandleRequest(self, request, context):
+        await asyncio.sleep(random.uniform(0.05, 0.2))
+        response_data = {
+            "service": NAME,
+            "path": request.path,
+            "method": request.method,
+        }
+        return service_pb2.HttpResponse(
+            status=200,
+            body=json.dumps(response_data).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+
+async def serve_grpc():
+    server = grpc.aio.server()
+    service_pb2_grpc.add_WebServiceServicer_to_server(WebServiceServicer(), server)
+    server.add_insecure_port("[::]:50051")
+    await server.start()
+    await server.wait_for_termination()
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(serve_grpc())
