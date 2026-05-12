@@ -37,6 +37,7 @@ CONTAINERS = [
     "http://web2:8000",
 ]
 
+HEALTH_TTL = 3
 
 #metrics 
 error_count:   dict[str, int] = {}
@@ -158,7 +159,7 @@ async def startup_lb_loops(app: web.Application) -> None:
 
 async def status(request: web.Request) -> web.Response:
     containers = []
-    for c in CONTAINERS:
+    for c in lb.CONTAINERS:
         circuit = circuit_breakers[c].current_state  # read before ping so half_open is visible
         reachable = await ping_container(request.app, c, force=True)
         containers.append({

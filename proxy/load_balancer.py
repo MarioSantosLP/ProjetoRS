@@ -90,6 +90,7 @@ def reload_config() -> tuple[list[str], list [str]]:
         _active_connection.pop(url, None)
         
     log.info(f"Config reloaded — added: {added}, removed: {removed}, active: {CONTAINERS}")
+    return added, removed
 
 
 
