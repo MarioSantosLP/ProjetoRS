@@ -38,38 +38,48 @@ CONTAINERS = [
 ]
 
 
-#metrics created more for demonstration 
-error_count = {container : 0 for container in CONTAINERS}
-request_count = {container : 0 for container in CONTAINERS}
+#metrics 
+error_count:   dict[str, int] = {}
+request_count: dict[str, int] = {}
 total_requests = 0
 start_time = time.time()
+
 
 #needed for status(should change when we do many load balancers later)
 LOAD_BALANCER = "active_probe"
 
-HEALTH_TTL = 3
-health_cache = {
-    container: {"reachable": False, "checked_at": 0}
-    for container in CONTAINERS
-}
-
+health_cache:    dict[str, dict] = {}
+circuit_breakers: dict[str, CircuitBreaker] = {}
+ 
 HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
 }
 
-circuit_breakers = {c: CircuitBreaker() for c in CONTAINERS}
 
 
 # Keeps the last 500 request timelines in memory (older ones are evicted automatically)
 TRACE_MAX = 500
 _traces: collections.OrderedDict[str, list[dict]] = collections.OrderedDict()
+
+
+
+#helper funcs
+def _init_container(container: str) -> None:
+    
+    error_count.setdefault(container, 0)
+    request_count.setdefault(container, 0)
+    health_cache.setdefault(container, {"reachable": False, "checked_at": 0})
+    circuit_breakers.setdefault(container, CircuitBreaker())
+ 
+ 
+def _remove_container(container: str) -> None:
+    
+    error_count.pop(container, None)
+    request_count.pop(container, None)
+    health_cache.pop(container, None)
+    circuit_breakers.pop(container, None)
+
 
 def trace(req_id: str, component: str, event: str, **kwargs) -> None:
     """Append a timestamped event to the trace for req_id."""
@@ -127,11 +137,24 @@ async def startup_forward(app: web.Application) -> None:
 async def close_session(app: web.Application) -> None:
     await app["session"].close()
 
+async def startup_config(app: web.Application) -> None:
+    lb.load_config()
+    for container in lb.CONTAINERS:
+        _init_container(container)
+    log.info(f"Containers loaded: {lb.CONTAINERS}")
+
+
 async def startup_health_check(app: web.Application) -> None:
     log.info("Running startup health checks...")
     for container in CONTAINERS:
         reachable = await ping_container(app, container, force=True)
         log.info(f"{container} {'reachable' if reachable else 'unreachable'}")
+
+async def startup_lb_loops(app: web.Application) -> None:
+    asyncio.ensure_future(lb.health_loop())
+    asyncio.ensure_future(lb.active_probe_loop(app["session"]))
+    log.info("Load balancer loops started")
+
 
 async def status(request: web.Request) -> web.Response:
     containers = []
@@ -147,6 +170,42 @@ async def status(request: web.Request) -> web.Response:
         "load_balancer": LOAD_BALANCER,
         "containers": containers,
     })
+
+
+async def admin_reload(request: web.Request) -> web.Response:
+  
+    try:
+        added, removed = lb.reload_config()
+ 
+        for container in added:
+            _init_container(container)
+            reachable = await ping_container(request.app, container, force=True)
+            log.info(f"[reload] New container {container} — reachable: {reachable}")
+ 
+        for container in removed:
+            _remove_container(container)
+            log.info(f"[reload] Removed container {container}")
+ 
+        return web.json_response({
+            "status":   "ok",
+            "added":    added,
+            "removed":  removed,
+            "active":   lb.CONTAINERS,
+        })
+ 
+    except FileNotFoundError:
+        log.error("[reload] config.json not found")
+        return web.json_response({"error": "config.json not found"}, status=500)
+    except Exception as e:
+        log.error(f"[reload] Failed: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+
+
+
+
+
 
 async def handle(request: web.Request) -> web.Response:
     global total_requests
@@ -241,22 +300,21 @@ async def trace_endpoint(request: web.Request) -> web.Response:
     return web.json_response({"req_id": req_id, "events": timeline})
 
 
-async def startup_lb_loops(app: web.Application) -> None:
-    asyncio.ensure_future(lb.health_loop())
-    asyncio.ensure_future(lb.active_probe_loop(app["session"]))
-    log.info("Load balancer loops started")
 
 app = web.Application()
 app.on_startup.append(startup_session)
 app.on_startup.append(startup_forward)
+app.on_startup.append(startup_config)
 app.on_startup.append(startup_queue)
 app.on_startup.append(startup_health_check) #basically for debug 
 app.on_startup.append(startup_lb_loops) # start load balancer background loops on startup
 app.on_cleanup.append(shutdown_queue)
 app.on_cleanup.append(close_session)
+
 app.router.add_get("/metrics", metrics)
 app.router.add_get("/status", status)
 app.router.add_get("/trace/{req_id}", trace_endpoint)
+app.router.add_post("/admin/reload", admin_reload)
 app.router.add_route("*", "/{path_info:.*}", handle)
 
 if __name__ == "__main__":
