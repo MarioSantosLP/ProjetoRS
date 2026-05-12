@@ -2,28 +2,100 @@ import logging
 import time
 import asyncio
 import aiodocker
+import json
 
 from aiohttp import ClientSession, ClientTimeout
 
 log = logging.getLogger("load_balancer")
 
-CONTAINERS = [
-    "http://web1:8000",
-    "http://web2:8000",
-]
+CONFIG_PATH = "config/config.json"
 
-DOCKER_NAMES = {
-    "http://web1:8000": "projetors-web1-1",
-    "http://web2:8000": "projetors-web2-1",
-}
+#idea:hot reload saw it in nginx
+#and wanted to see if we can implement 
+#making it so that we can update the container list and roles without restarting the load balancer
 
-# role assign
-CONTAINER_ROLES: dict[str, str] = {
-    "http://web1:8000": "cpu",
-    "http://web2:8000": "memory",
-}
+#to be updated by reload_config
+CONTAINERS : list[str] = []
+DOCKER_NAMES : dict[str, str] = {}
+CONTAINER_ROLES : dict[str, str] = {}
+
+container_stats : dict[str, dict] = {}
+probe_stats : dict[str, dict] = {}
+_active_connection : dict[str, int] = {}
 
 _rr_index = 0
+
+
+def _default_container_stats() -> dict:
+    return {
+        "cpu": 0.0,
+        "mem": 0.0,
+        "healthy": True,
+        "last_seen": 0.0,
+    }
+
+def default_probe_stats() -> dict:
+    return {
+        "healthy": False,
+        "latency_ms": None,
+        "last_seen": 0.0,
+    }
+
+def load_config() -> None:
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    
+    for entry in cfg["containers"]:
+        url = entry["url"]
+        if url not in CONTAINERS:
+            CONTAINERS.append(url)
+            DOCKER_NAMES[url] = entry["docker_name"]
+            CONTAINER_ROLES[url] = entry.get("role", "general")
+            container_stats.setdefault(url, _default_container_stats())
+            probe_stats.setdefault(url, default_probe_stats())
+            _active_connection.setdefault(url, 0)
+        
+    log.info("Config loaded the conts {CONTAINERS}")
+
+
+def reload_config() -> tuple[list[str], list [str]]:
+
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    
+    new_urls = {entry["url"] for entry in cfg["containers"]}
+    old_urls = set(CONTAINERS)
+
+    added = [url for url in new_urls if url not in old_urls]
+    removed = [url for url in old_urls if url not in new_urls]
+
+    #add conts
+    for entry in cfg["containers"]:
+        url = entry["url"]
+        DOCKER_NAMES[url] = entry["docker_name"]
+        CONTAINER_ROLES[url] = entry.get("role", "general")
+        if url not in CONTAINERS:
+            CONTAINERS.append(url)
+        container_stats.setdefault(url, _default_container_stats())
+        probe_stats.setdefault(url, default_probe_stats())
+        _active_connection.setdefault(url, 0)
+
+    #remove conts
+    for url in removed:
+        CONTAINERS.remove(url)
+        DOCKER_NAMES.pop(url, None)
+        CONTAINER_ROLES.pop(url, None)
+        container_stats.pop(url, None)
+        probe_stats.pop(url, None)
+        _active_connection.pop(url, None)
+        
+    log.info(f"Config reloaded — added: {added}, removed: {removed}, active: {CONTAINERS}")
+
+
+
+
+
+
 
 def round_robin(pool: list[str] | None = None) -> str:
     global _rr_index
@@ -140,8 +212,9 @@ async def active_probe_loop(session: ClientSession) -> None:
     log.info("Starting active probing loop")
 
     while True:
+        targets =list (CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
         await asyncio.gather(
-            *(probe_container(session, container) for container in CONTAINERS)
+            *(probe_container(session, container) for container in targets)
         )
 
         await asyncio.sleep(PROBE_INTERVAL)
@@ -211,7 +284,8 @@ async def health_loop()-> None:
 
     async with aiodocker.Docker() as docker:
         while True:
-            for container in CONTAINERS:
+            targets = list(CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
+            for container in targets:
                 try:
                     name = DOCKER_NAMES[container]
                     c = await docker.containers.get(name)
