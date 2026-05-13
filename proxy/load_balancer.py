@@ -22,6 +22,7 @@ CONTAINER_ROLES : dict[str, str] = {}
 container_stats : dict[str, dict] = {}
 probe_stats : dict[str, dict] = {}
 _active_connection : dict[str, int] = {}
+DISABLED_CONTAINERS : set[str] = set()
 
 _rr_index = 0
 
@@ -46,7 +47,10 @@ def load_config() -> None:
         cfg = json.load(f)
     
     for entry in cfg["containers"]:
+
         url = entry["url"]
+        DISABLED_CONTAINERS.discard(url)  # in case it was previously disabled
+
         if url not in CONTAINERS:
             CONTAINERS.append(url)
             DOCKER_NAMES[url] = entry["docker_name"]
@@ -80,27 +84,38 @@ def reload_config() -> tuple[list[str], list [str]]:
         probe_stats.setdefault(url, default_probe_stats())
         _active_connection.setdefault(url, 0)
 
-    #remove conts
     for url in removed:
-        CONTAINERS.remove(url)
+        if url in CONTAINERS:
+            CONTAINERS.remove(url)
+
+        DISABLED_CONTAINERS.add(url)
         DOCKER_NAMES.pop(url, None)
         CONTAINER_ROLES.pop(url, None)
-        container_stats.pop(url, None)
-        probe_stats.pop(url, None)
-        _active_connection.pop(url, None)
+
+        if url in container_stats:
+            container_stats[url]["healthy"] = False
+
+        if url in probe_stats:
+            probe_stats[url]["healthy"] = False
+            probe_stats[url]["latency_ms"] = None
         
     log.info(f"Config reloaded — added: {added}, removed: {removed}, active: {CONTAINERS}")
     return added, removed
 
 
 
-
-
+#helper to check conts
+def _enabled(pool: list[str] | None = None) -> list[str]:
+    candidates = pool if pool is not None else CONTAINERS
+    return [c for c in candidates if c not in DISABLED_CONTAINERS]
 
 
 def round_robin(pool: list[str] | None = None) -> str:
     global _rr_index
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
+    if not candidates:
+        return None
+
     container = candidates[_rr_index % len(candidates)]
     _rr_index += 1
     return container
@@ -159,7 +174,7 @@ WEIGHTED_STATS_STALE = 15
 
 
 async def cpu_aware(pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     now = time.monotonic()
 
     fresh = [
@@ -194,7 +209,7 @@ async def probe_container(session: ClientSession, container: str) ->None:
         probe_stats[container]["last_seen"] = time.monotonic()
 
 async def active_probe(session: ClientSession, pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     # Read from the cache kept fresh by active_probe_loop — no inline probing on the hot path
     now = time.monotonic()
     fresh = [
@@ -222,7 +237,7 @@ async def active_probe_loop(session: ClientSession) -> None:
 
 
 async def weighted_stats(pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     now = time.monotonic()
 
     fresh = [
@@ -247,16 +262,17 @@ async def weighted_stats(pool: list[str] | None = None) -> str | None:
 
 
 def _candidates_for_workload(workload_type: str | None) -> list[str]:
-   
-    if workload_type not in ("cpu", "memory"):
-        return CONTAINERS  # no preference — full pool
+    active = _enabled()
 
-    matched = [c for c in CONTAINERS if CONTAINER_ROLES.get(c) == workload_type]
+    if workload_type not in ("cpu", "memory"):
+        return active
+
+    matched = [c for c in active if CONTAINER_ROLES.get(c) == workload_type]
     if matched:
         return matched
 
     log.warning(f"No containers with role '{workload_type}', falling back to full pool")
-    return CONTAINERS
+    return active
 
 
 async def pick_by_role(workload_type: str | None, algorithm: str, session=None) -> str | None:

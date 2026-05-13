@@ -78,11 +78,8 @@ def _init_container(container: str) -> None:
  
  
 def _remove_container(container: str) -> None:
-    
-    error_count.pop(container, None)
-    request_count.pop(container, None)
-    health_cache.pop(container, None)
-    circuit_breakers.pop(container, None)
+    _init_container(container)
+    health_cache[container] = {"reachable": False, "checked_at": time.time()}
 
 
 def trace(req_id: str, component: str, event: str, **kwargs) -> None:
@@ -141,7 +138,7 @@ async def startup_forward(app: web.Application) -> None:
 async def close_session(app: web.Application) -> None:
     await app["session"].close()
 
-async def startup_config(app: web.Application) -> None:
+async def startup_config(app: web.Application) -> None: 
     try:
         lb.load_config()
         for container in lb.CONTAINERS:
