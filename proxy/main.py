@@ -4,15 +4,18 @@ import sys
 import time
 import os
 import grpc
+import collections
+import json
+from json import JSONDecodeError
 import service_pb2
 import service_pb2_grpc
-import collections
 import load_balancer as lb
 from aiohttp import web, ClientSession, ClientTimeout
 from logging.handlers import RotatingFileHandler
 import asyncio
 from priority_queue import enqueue, startup_queue, shutdown_queue
 from circuit import CircuitBreaker
+
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
 
@@ -139,11 +142,15 @@ async def close_session(app: web.Application) -> None:
     await app["session"].close()
 
 async def startup_config(app: web.Application) -> None:
-    lb.load_config()
-    for container in lb.CONTAINERS:
-        _init_container(container)
-    log.info(f"Containers loaded: {lb.CONTAINERS}")
-
+    try:
+        lb.load_config()
+        for container in lb.CONTAINERS:
+            _init_container(container)
+        log.info(f"Containers loaded: {lb.CONTAINERS}")
+    except FileNotFoundError:
+        log.error("config.json not found")
+    except JSONDecodeError:
+        log.error("config.json is not valid JSON")
 
 async def startup_health_check(app: web.Application) -> None:
     log.info("Running startup health checks...")
