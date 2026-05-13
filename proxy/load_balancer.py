@@ -189,21 +189,36 @@ async def cpu_aware(pool: list[str] | None = None) -> str | None:
 
     return min(fresh, key=lambda c: container_stats[c]["cpu"])
 
-async def probe_container(session: ClientSession, container: str) ->None:
+async def probe_container(session: ClientSession, container: str) -> None: #added guard for disabled conts
+    if container in DISABLED_CONTAINERS:
+        return
+
+    probe_stats.setdefault(container, default_probe_stats())
+
     start = time.monotonic()
+
     try:
         async with session.get(
             f"{container}/ping",
             timeout=ClientTimeout(total=PROBE_TIMEOUT)
-        
         ) as resp:
             healthy = resp.status == 200
             latency_ms = round((time.monotonic() - start) * 1000, 2)
+
+            if container in DISABLED_CONTAINERS:
+                return
+
             probe_stats[container]["latency_ms"] = latency_ms
             probe_stats[container]["healthy"] = healthy
             probe_stats[container]["last_seen"] = time.monotonic()
-    except Exception as e:  
+
+    except Exception as e:
         log.warning(f"Probe failed for {container}: {e}")
+
+        if container in DISABLED_CONTAINERS:
+            return
+
+        probe_stats.setdefault(container, default_probe_stats())
         probe_stats[container]["healthy"] = False
         probe_stats[container]["latency_ms"] = None
         probe_stats[container]["last_seen"] = time.monotonic()
