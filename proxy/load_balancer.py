@@ -55,7 +55,7 @@ def load_config() -> None:
             probe_stats.setdefault(url, default_probe_stats())
             _active_connection.setdefault(url, 0)
         
-    log.info("Config loaded the conts {CONTAINERS}")
+    log.info(f"Config loaded the conts {CONTAINERS}")
 
 
 def reload_config() -> tuple[list[str], list [str]]:

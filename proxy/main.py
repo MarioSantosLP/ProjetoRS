@@ -147,7 +147,7 @@ async def startup_config(app: web.Application) -> None:
 
 async def startup_health_check(app: web.Application) -> None:
     log.info("Running startup health checks...")
-    for container in CONTAINERS:
+    for container in lb.CONTAINERS:
         reachable = await ping_container(app, container, force=True)
         log.info(f"{container} {'reachable' if reachable else 'unreachable'}")
 
