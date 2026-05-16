@@ -2,32 +2,120 @@ import logging
 import time
 import asyncio
 import aiodocker
+import json
 
 from aiohttp import ClientSession, ClientTimeout
 
 log = logging.getLogger("load_balancer")
 
-CONTAINERS = [
-    "http://web1:8000",
-    "http://web2:8000",
-]
+CONFIG_PATH = "config/config.json"
 
-DOCKER_NAMES = {
-    "http://web1:8000": "projetors-web1-1",
-    "http://web2:8000": "projetors-web2-1",
-}
+#idea:hot reload saw it in nginx
+#and wanted to see if we can implement 
+#making it so that we can update the container list and roles without restarting the load balancer
 
-# role assign
-CONTAINER_ROLES: dict[str, str] = {
-    "http://web1:8000": "cpu",
-    "http://web2:8000": "memory",
-}
+#to be updated by reload_config
+CONTAINERS : list[str] = []
+DOCKER_NAMES : dict[str, str] = {}
+CONTAINER_ROLES : dict[str, str] = {}
+
+container_stats : dict[str, dict] = {}
+probe_stats : dict[str, dict] = {}
+_active_connection : dict[str, int] = {}
+DISABLED_CONTAINERS : set[str] = set()
 
 _rr_index = 0
 
+
+def _default_container_stats() -> dict:
+    return {
+        "cpu": 0.0,
+        "mem": 0.0,
+        "healthy": True,
+        "last_seen": 0.0,
+    }
+
+def default_probe_stats() -> dict:
+    return {
+        "healthy": False,
+        "latency_ms": None,
+        "last_seen": 0.0,
+    }
+
+def load_config() -> None:
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    
+    for entry in cfg["containers"]:
+
+        url = entry["url"]
+        DISABLED_CONTAINERS.discard(url)  # in case it was previously disabled
+
+        if url not in CONTAINERS:
+            CONTAINERS.append(url)
+            DOCKER_NAMES[url] = entry["docker_name"]
+            CONTAINER_ROLES[url] = entry.get("role", "general")
+            container_stats.setdefault(url, _default_container_stats())
+            probe_stats.setdefault(url, default_probe_stats())
+            _active_connection.setdefault(url, 0)
+        
+    log.info(f"Config loaded the conts {CONTAINERS}")
+
+
+def reload_config() -> tuple[list[str], list [str]]:
+
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    
+    new_urls = {entry["url"] for entry in cfg["containers"]}
+    old_urls = set(CONTAINERS)
+
+    added = [url for url in new_urls if url not in old_urls]
+    removed = [url for url in old_urls if url not in new_urls]
+
+    #add conts
+    for entry in cfg["containers"]:
+        url = entry["url"]
+        DOCKER_NAMES[url] = entry["docker_name"]
+        CONTAINER_ROLES[url] = entry.get("role", "general")
+        if url not in CONTAINERS:
+            CONTAINERS.append(url)
+        container_stats.setdefault(url, _default_container_stats())
+        probe_stats.setdefault(url, default_probe_stats())
+        _active_connection.setdefault(url, 0)
+
+    for url in removed:
+        if url in CONTAINERS:
+            CONTAINERS.remove(url)
+
+        DISABLED_CONTAINERS.add(url)
+        DOCKER_NAMES.pop(url, None)
+        CONTAINER_ROLES.pop(url, None)
+
+        if url in container_stats:
+            container_stats[url]["healthy"] = False
+
+        if url in probe_stats:
+            probe_stats[url]["healthy"] = False
+            probe_stats[url]["latency_ms"] = None
+        
+    log.info(f"Config reloaded — added: {added}, removed: {removed}, active: {CONTAINERS}")
+    return added, removed
+
+
+
+#helper to check conts
+def _enabled(pool: list[str] | None = None) -> list[str]:
+    candidates = pool if pool is not None else CONTAINERS
+    return [c for c in candidates if c not in DISABLED_CONTAINERS]
+
+
 def round_robin(pool: list[str] | None = None) -> str:
     global _rr_index
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
+    if not candidates:
+        return None
+
     container = candidates[_rr_index % len(candidates)]
     _rr_index += 1
     return container
@@ -86,7 +174,7 @@ WEIGHTED_STATS_STALE = 15
 
 
 async def cpu_aware(pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     now = time.monotonic()
 
     fresh = [
@@ -101,27 +189,42 @@ async def cpu_aware(pool: list[str] | None = None) -> str | None:
 
     return min(fresh, key=lambda c: container_stats[c]["cpu"])
 
-async def probe_container(session: ClientSession, container: str) ->None:
+async def probe_container(session: ClientSession, container: str) -> None: #added guard for disabled conts
+    if container in DISABLED_CONTAINERS:
+        return
+
+    probe_stats.setdefault(container, default_probe_stats())
+
     start = time.monotonic()
+
     try:
         async with session.get(
             f"{container}/ping",
             timeout=ClientTimeout(total=PROBE_TIMEOUT)
-        
         ) as resp:
             healthy = resp.status == 200
             latency_ms = round((time.monotonic() - start) * 1000, 2)
+
+            if container in DISABLED_CONTAINERS:
+                return
+
             probe_stats[container]["latency_ms"] = latency_ms
             probe_stats[container]["healthy"] = healthy
             probe_stats[container]["last_seen"] = time.monotonic()
-    except Exception as e:  
+
+    except Exception as e:
         log.warning(f"Probe failed for {container}: {e}")
+
+        if container in DISABLED_CONTAINERS:
+            return
+
+        probe_stats.setdefault(container, default_probe_stats())
         probe_stats[container]["healthy"] = False
         probe_stats[container]["latency_ms"] = None
         probe_stats[container]["last_seen"] = time.monotonic()
 
 async def active_probe(session: ClientSession, pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     # Read from the cache kept fresh by active_probe_loop — no inline probing on the hot path
     now = time.monotonic()
     fresh = [
@@ -140,15 +243,16 @@ async def active_probe_loop(session: ClientSession) -> None:
     log.info("Starting active probing loop")
 
     while True:
+        targets =list (CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
         await asyncio.gather(
-            *(probe_container(session, container) for container in CONTAINERS)
+            *(probe_container(session, container) for container in targets)
         )
 
         await asyncio.sleep(PROBE_INTERVAL)
 
 
 async def weighted_stats(pool: list[str] | None = None) -> str | None:
-    candidates = pool if pool is not None else CONTAINERS
+    candidates = _enabled(pool)
     now = time.monotonic()
 
     fresh = [
@@ -173,16 +277,17 @@ async def weighted_stats(pool: list[str] | None = None) -> str | None:
 
 
 def _candidates_for_workload(workload_type: str | None) -> list[str]:
-   
-    if workload_type not in ("cpu", "memory"):
-        return CONTAINERS  # no preference — full pool
+    active = _enabled()
 
-    matched = [c for c in CONTAINERS if CONTAINER_ROLES.get(c) == workload_type]
+    if workload_type not in ("cpu", "memory"):
+        return active
+
+    matched = [c for c in active if CONTAINER_ROLES.get(c) == workload_type]
     if matched:
         return matched
 
     log.warning(f"No containers with role '{workload_type}', falling back to full pool")
-    return CONTAINERS
+    return active
 
 
 async def pick_by_role(workload_type: str | None, algorithm: str, session=None) -> str | None:
@@ -211,7 +316,8 @@ async def health_loop()-> None:
 
     async with aiodocker.Docker() as docker:
         while True:
-            for container in CONTAINERS:
+            targets = list(CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
+            for container in targets:
                 try:
                     name = DOCKER_NAMES[container]
                     c = await docker.containers.get(name)
