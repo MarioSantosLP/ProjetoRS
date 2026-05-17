@@ -15,6 +15,7 @@ from logging.handlers import RotatingFileHandler
 import asyncio
 from priority_queue import enqueue, startup_queue, shutdown_queue
 from circuit import CircuitBreaker
+import aiohttp
 
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
@@ -206,13 +207,9 @@ async def admin_reload(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=500)
 
 
-
-
-
-
-
-
-async def handle(request: web.Request) -> web.Response:
+async def handle(request: web.Request) -> web.StreamResponse:
+    if (request.headers.get("Upgrade","").lower() == "websocket"):
+        return await ws_handle(request)
     global total_requests
     req_id = str(uuid.uuid4())[:8]
     body = await request.read()  # must read here — stream can't be consumed inside the worker
@@ -304,6 +301,83 @@ async def trace_endpoint(request: web.Request) -> web.Response:
 
     return web.json_response({"req_id": req_id, "events": timeline})
 
+# --- WebSocket --- depois pode se retirar isto
+async def ws_handle(request: web.Request) -> web.StreamResponse:
+    req_id = str(uuid.uuid4())[:8]
+    t_start = time.monotonic()
+
+    trace(req_id, "websocket", "received", path=request.path, client=request.remote or "")
+    
+    container = await lb.pick_by_role(None, LOAD_BALANCER, request.app["session"])
+    if container is None:
+        trace(req_id, "websocket", "no_container")
+        return web.Response(status=503, text="No containers available")
+    
+    if circuit_breakers[container].is_open():
+        trace(req_id, "circuit", "open", container=container)
+        return web.Response(status=503)
+    
+    ws_client = web.WebSocketResponse()
+    await ws_client.prepare(request)
+
+    backend_url = container.replace("http://", "ws://") + "/ws"
+    session = request.app["session"]
+
+    n_sent=0
+    n_recv=0
+    
+    try:
+        async with session.ws_connect(backend_url) as ws_backend:
+
+            circuit_breakers[container].record_success()
+            trace(req_id, "websocket", "connected", container=container)
+            
+            async def client_to_backend():
+                nonlocal n_sent
+                async for msg in ws_client:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        n_sent += 1
+                        await ws_backend.send_str(msg.data)
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                        n_sent += 1
+                        await ws_backend.send_bytes(msg.data)
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                        break
+
+            async def backend_to_client():
+                nonlocal n_recv
+                async for msg in ws_backend:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        n_recv += 1
+                        await ws_client.send_str(msg.data)
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                        n_recv += 1
+                        await ws_client.send_bytes(msg.data)
+                    elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                        break
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(client_to_backend()),
+                    asyncio.create_task(backend_to_client()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+
+    except Exception as e:
+        circuit_breakers[container].record_failure()
+        trace(req_id, "websocket", "error", container=container, error=str(e))
+        log.error(f"[{req_id}] WebSocket failed for {container}: {e}")
+        await ws_client.close()
+        return ws_client
+    
+    trace(req_id, "websocket", "disconnected", container=container, 
+          duration_s=round(time.monotonic()-t_start, 2), messages_sent=n_sent, messages_receives=n_recv)
+        
+    await ws_client.close()
+    return ws_client
 
 
 app = web.Application()
