@@ -2,7 +2,7 @@ import asyncio
 import os
 import random
 import socket
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 
 import json
 import grpc
@@ -93,3 +93,15 @@ async def serve_grpc():
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(serve_grpc())
+
+# --- WebSocket ---
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"{NAME} received: {data}")
+    except:
+        pass
