@@ -9,6 +9,11 @@
             "url": "http://web2:8000",
             "docker_name": "proxy-web2",
             "role": "memory"
+        },
+        {
+            "url": "http://web3:8000",
+            "docker_name": "proxy-web3",
+            "role": "cpu"
         }
     ]
 }
