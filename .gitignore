@@ -13,3 +13,4 @@ asyncio
 grpc
 json
 sys
+.sh
