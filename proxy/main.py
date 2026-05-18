@@ -264,6 +264,12 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         if k.lower() not in HOP_BY_HOP_HEADERS
     }
 
+    # always inject tracing and forwarding headers
+    existing_xff = request.headers.get("X-Forwarded-For", "")
+    client_ip = request.remote or ""
+    headers["X-Forwarded-For"] = f"{existing_xff}, {client_ip}".strip(", ") if existing_xff else client_ip
+    headers["X-Request-ID"] = req_id
+
     # converte o host HTTP para endereço gRPC (porta 50051)
     grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
 
