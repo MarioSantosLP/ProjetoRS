@@ -73,10 +73,9 @@ async def burn_cpu(duration: float = 0.5):
         "service": NAME,
         "type": "cpu_burn",
         "duration": dur,
-        "result": res,
     }
 
-@app.get("/burn/mem")
+@app.get("/burn/memory")
 async def burn_mem(size_mb: int = 100, duration: float = 1.0):
     mb = max(1, min(size_mb, 512)) #limit to [1, 512] MB
     dur = max(0.1, min(duration, 30))

@@ -1,21 +1,22 @@
+import asyncio
+import collections
 import logging
-import uuid
+import os
 import sys
 import time
-import os
-import grpc
-import collections
-import json
+import uuid
 from json import JSONDecodeError
+from logging.handlers import RotatingFileHandler
+
+import aiohttp
+import grpc
+from aiohttp import ClientSession, ClientTimeout, web
+
+import load_balancer as lb
 import service_pb2
 import service_pb2_grpc
-import load_balancer as lb
-from aiohttp import web, ClientSession, ClientTimeout
-from logging.handlers import RotatingFileHandler
-import asyncio
-from priority_queue import enqueue, startup_queue, shutdown_queue
 from circuit import CircuitBreaker
-import aiohttp
+from priority_queue import enqueue, shutdown_queue, startup_queue
 
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
@@ -51,7 +52,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "active_probe"
+LOAD_BALANCER = "weighted"
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -105,6 +106,8 @@ async def metrics(request: web.Request) -> web.Response:
         "total_requests": total_requests,
         "requests_per_container": request_count,
         "errors_per_container": error_count,
+        "container_stats": lb.container_stats,
+        "probe_stats": lb.probe_stats,
 
     })
 
