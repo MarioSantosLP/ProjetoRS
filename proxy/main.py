@@ -52,7 +52,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "weighted"
+LOAD_BALANCER = "round_robin"
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -229,23 +229,27 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
     t_start = time.monotonic()
     trace(req_id, "queue", "dequeued", workload=workload_type or "any")
 
-    container = await lb.pick_by_role(workload_type, LOAD_BALANCER, app["session"])
-
+    container = None
+    for _ in range(len(lb.CONTAINERS)):
+        candidate = await lb.pick_by_role(workload_type, LOAD_BALANCER, app["session"])
+        if candidate is None:
+            break
+        if circuit_breakers[candidate].is_open():
+            log.warning(f"[{req_id}] Circuit open for {candidate}, trying another")
+            trace(req_id, "circuit", "open", container=candidate)
+            continue
+        if not await ping_container(app, candidate):
+            circuit_breakers[candidate].record_failure()
+            trace(req_id, "health", "unreachable", container=candidate)
+            continue
+        container = candidate
+        break
+    
     if container is None:
         log.error(f"[{req_id}] No available containers")
         trace(req_id, "balancer", "no_container")
         return web.Response(status=503, text="No available containers")
-
-    if circuit_breakers[container].is_open():
-        log.warning(f"[{req_id}] Circuit open for {container}")
-        trace(req_id, "circuit", "open", container=container)
-        return web.Response(status=503, text="No available containers")
-
-    if not await ping_container(app, container):
-        circuit_breakers[container].record_failure()
-        trace(req_id, "health", "unreachable", container=container)
-        return web.Response(status=503, text="No available containers")
-
+    
     request_count[container] += 1
     trace(req_id, "balancer", "routed", container=container, algorithm=LOAD_BALANCER,
           cpu=round(lb.container_stats[container]["cpu"], 1),
