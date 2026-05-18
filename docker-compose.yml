@@ -1,6 +1,7 @@
 services:
   web1:
     build: .
+    container_name: proxy-web1
     environment:
       - SERVICE_NAME=web1
     ports:
@@ -15,6 +16,7 @@ services:
 
   web2:
     build: .
+    container_name: proxy-web2
     environment:
       - SERVICE_NAME=web2
     ports:
@@ -29,6 +31,7 @@ services:
 
   proxy:
       build: ./proxy
+      container_name: proxy-proxy
       ports:
         - "8080:8080"
       volumes:
