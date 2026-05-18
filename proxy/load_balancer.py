@@ -145,10 +145,12 @@ _active_connection: dict[str, int] = {c: 0 for c in CONTAINERS}
 
 def conn_acquired(container: str) -> None:
     _active_connection[container] += 1
+    log.debug(f"conn_acquired {container} -> active={_active_connection[container]}")
 
 def conn_released(container: str) -> None:
     if _active_connection[container] > 0:
         _active_connection[container] -= 1
+        log.debug(f"conn_released {container} -> active={_active_connection[container]}")
 
 
 PROBE_TIMEOUT = 1

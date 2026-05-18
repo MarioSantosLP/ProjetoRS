@@ -52,7 +52,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "round_robin"
+LOAD_BALANCER = "weighted"
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -244,13 +244,14 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
             continue
         container = candidate
         break
-    
+
     if container is None:
         log.error(f"[{req_id}] No available containers")
         trace(req_id, "balancer", "no_container")
         return web.Response(status=503, text="No available containers")
-    
+
     request_count[container] += 1
+    lb.conn_acquired(container)  # increment active connections for weighted lb
     trace(req_id, "balancer", "routed", container=container, algorithm=LOAD_BALANCER,
           cpu=round(lb.container_stats[container]["cpu"], 1),
           mem=round(lb.container_stats[container]["mem"], 1))
@@ -283,6 +284,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
             log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
             trace(req_id, "proxy", "responded", status=grpc_response.status,
                   total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
+            lb.conn_released(container)  # decrement active connections
             return web.Response(
                 status=grpc_response.status,
                 body=grpc_response.body,
@@ -294,6 +296,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         circuit_breakers[container].record_failure()
         trace(req_id, "proxy", "error", container=container, error=str(e))
         log.error(f"[{req_id}] gRPC failed for {container}: {e}")
+        lb.conn_released(container)  # decrement even on failure
         return web.Response(status=502, text="Container unavailable")
 
 async def trace_endpoint(request: web.Request) -> web.Response:
