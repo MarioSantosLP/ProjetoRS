@@ -3,7 +3,7 @@ import os
 import random
 import socket
 from fastapi import FastAPI, Request, WebSocket
-
+import time
 import json
 import grpc
 import sys
@@ -56,7 +56,40 @@ async def healthz():
         "load": round(active_connections / CAPACITY, 3),
     }
 
+@app.get("/burn/cpu")
+async def burn_cpu(duration: float = 0.5):
+    dur = max(0.1, min(duration, 30)) #limit it to [0.1, 30]
 
+    def burn():
+        end = time.time() + dur
+        x = 0
+        while time.time() < end:
+            x += 1 #burn CPU
+        return x
+
+    loop = asyncio.get_running_loop()
+    res = await loop.run_in_executor(None, burn)
+    return {
+        "service": NAME,
+        "type": "cpu_burn",
+        "duration": dur,
+    }
+
+@app.get("/burn/memory")
+async def burn_mem(size_mb: int = 100, duration: float = 1.0):
+    mb = max(1, min(size_mb, 512)) #limit to [1, 512] MB
+    dur = max(0.1, min(duration, 30))
+
+    data = bytearray(mb * 1024 * 1024) #alloc mem
+
+    await asyncio.sleep(dur)
+    del data #free mem
+    return {
+        "service": NAME,
+        "type": "mem_burn",
+        "size_mb": mb,
+        "duration": dur,
+    }
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def handle(request: Request, path: str):
@@ -67,7 +100,7 @@ async def handle(request: Request, path: str):
         "method": request.method,
     }
 
-# --- gRPC ---
+# ---gRPC 
 
 class WebServiceServicer(service_pb2_grpc.WebServiceServicer):
     async def HandleRequest(self, request, context):
@@ -94,7 +127,7 @@ async def serve_grpc():
 async def startup():
     asyncio.create_task(serve_grpc())
 
-# --- WebSocket ---
+# ---WS
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -104,4 +137,4 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             await websocket.send_text(f"{NAME} received: {data}")
     except:
-        pass
+        pass #clean disconnect 

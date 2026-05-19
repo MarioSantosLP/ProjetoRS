@@ -1,21 +1,22 @@
+import asyncio
+import collections
 import logging
-import uuid
+import os
 import sys
 import time
-import os
-import grpc
-import collections
-import json
+import uuid
 from json import JSONDecodeError
+from logging.handlers import RotatingFileHandler
+
+import aiohttp
+import grpc
+from aiohttp import ClientSession, ClientTimeout, web
+
+import load_balancer as lb
 import service_pb2
 import service_pb2_grpc
-import load_balancer as lb
-from aiohttp import web, ClientSession, ClientTimeout
-from logging.handlers import RotatingFileHandler
-import asyncio
-from priority_queue import enqueue, startup_queue, shutdown_queue
 from circuit import CircuitBreaker
-import aiohttp
+from priority_queue import enqueue, shutdown_queue, startup_queue
 
 
 os.makedirs("logs", exist_ok=True) #so it doesnt fail if missing
@@ -51,7 +52,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "active_probe"
+LOAD_BALANCER = "weighted"
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -105,6 +106,8 @@ async def metrics(request: web.Request) -> web.Response:
         "total_requests": total_requests,
         "requests_per_container": request_count,
         "errors_per_container": error_count,
+        "container_stats": lb.container_stats,
+        "probe_stats": lb.probe_stats,
 
     })
 
@@ -226,24 +229,42 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
     t_start = time.monotonic()
     trace(req_id, "queue", "dequeued", workload=workload_type or "any")
 
-    container = await lb.pick_by_role(workload_type, LOAD_BALANCER, app["session"])
+    container = None
+    tried: set[str] = set()
+
+    for _ in range(len(lb.CONTAINERS)):
+        candidate = await lb.pick_by_role(
+            workload_type,
+            LOAD_BALANCER,
+            app["session"],
+            exclude=tried,
+        )
+
+        if candidate is None:
+            break
+
+        tried.add(candidate)
+
+        if circuit_breakers[candidate].is_open():
+            log.warning(f"[{req_id}] Circuit open for {candidate}, trying another")
+            trace(req_id, "circuit", "open", container=candidate)
+            continue
+
+        if not await ping_container(app, candidate, force=True):
+            circuit_breakers[candidate].record_failure()
+            trace(req_id, "health", "unreachable", container=candidate)
+            continue
+
+        container = candidate
+        break
 
     if container is None:
         log.error(f"[{req_id}] No available containers")
         trace(req_id, "balancer", "no_container")
         return web.Response(status=503, text="No available containers")
 
-    if circuit_breakers[container].is_open():
-        log.warning(f"[{req_id}] Circuit open for {container}")
-        trace(req_id, "circuit", "open", container=container)
-        return web.Response(status=503, text="No available containers")
-
-    if not await ping_container(app, container):
-        circuit_breakers[container].record_failure()
-        trace(req_id, "health", "unreachable", container=container)
-        return web.Response(status=503, text="No available containers")
-
     request_count[container] += 1
+    lb.conn_acquired(container)  # increment active connections for weighted lb
     trace(req_id, "balancer", "routed", container=container, algorithm=LOAD_BALANCER,
           cpu=round(lb.container_stats[container]["cpu"], 1),
           mem=round(lb.container_stats[container]["mem"], 1))
@@ -255,6 +276,12 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         k: v for k, v in request.headers.items()
         if k.lower() not in HOP_BY_HOP_HEADERS
     }
+
+    # always inject tracing and forwarding headers
+    existing_xff = request.headers.get("X-Forwarded-For", "")
+    client_ip = request.remote or ""
+    headers["X-Forwarded-For"] = f"{existing_xff}, {client_ip}".strip(", ") if existing_xff else client_ip
+    headers["X-Request-ID"] = req_id
 
     # converte o host HTTP para endereço gRPC (porta 50051)
     grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
@@ -276,6 +303,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
             log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
             trace(req_id, "proxy", "responded", status=grpc_response.status,
                   total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
+            lb.conn_released(container)  # decrement active connections
             return web.Response(
                 status=grpc_response.status,
                 body=grpc_response.body,
@@ -287,6 +315,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         circuit_breakers[container].record_failure()
         trace(req_id, "proxy", "error", container=container, error=str(e))
         log.error(f"[{req_id}] gRPC failed for {container}: {e}")
+        lb.conn_released(container)  # decrement even on failure
         return web.Response(status=502, text="Container unavailable")
 
 async def trace_endpoint(request: web.Request) -> web.Response:
@@ -308,14 +337,37 @@ async def ws_handle(request: web.Request) -> web.StreamResponse:
 
     trace(req_id, "websocket", "received", path=request.path, client=request.remote or "")
     
-    container = await lb.pick_by_role(None, LOAD_BALANCER, request.app["session"])
+    container = None
+    tried: set[str] = set()
+
+    for _ in range(len(lb.CONTAINERS)):
+        candidate = await lb.pick_by_role(
+            None,
+            LOAD_BALANCER,
+            request.app["session"],
+            exclude=tried,
+        )
+
+        if candidate is None:
+            break
+
+        tried.add(candidate)
+
+        if circuit_breakers[candidate].is_open():
+            trace(req_id, "circuit", "open", container=candidate)
+            continue
+
+        if not await ping_container(request.app, candidate, force=True):
+            circuit_breakers[candidate].record_failure()
+            trace(req_id, "health", "unreachable", container=candidate)
+            continue
+
+        container = candidate
+        break
+
     if container is None:
         trace(req_id, "websocket", "no_container")
         return web.Response(status=503, text="No containers available")
-    
-    if circuit_breakers[container].is_open():
-        trace(req_id, "circuit", "open", container=container)
-        return web.Response(status=503)
     
     ws_client = web.WebSocketResponse()
     await ws_client.prepare(request)

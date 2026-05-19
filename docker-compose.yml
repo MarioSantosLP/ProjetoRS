@@ -1,6 +1,7 @@
 services:
   web1:
     build: .
+    container_name: proxy-web1
     environment:
       - SERVICE_NAME=web1
     ports:
@@ -15,6 +16,7 @@ services:
 
   web2:
     build: .
+    container_name: proxy-web2
     environment:
       - SERVICE_NAME=web2
     ports:
@@ -27,8 +29,39 @@ services:
       retries: 5
       start_period: 5s
 
+  web3:
+    build: .
+    container_name: proxy-web3
+    environment:
+      - SERVICE_NAME=web3
+    ports:
+      - "8003:8000"
+      - "50053:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s   
+  
+  web4:
+    build: .
+    container_name: proxy-web4
+    environment:
+      - SERVICE_NAME=web4
+    ports:
+      - "8004:8000"
+      - "50054:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s  
+
   proxy:
       build: ./proxy
+      container_name: proxy-proxy
       ports:
         - "8080:8080"
       volumes:
@@ -39,4 +72,8 @@ services:
         web1:
           condition: service_healthy
         web2:
+          condition: service_healthy
+        web3:
+          condition: service_healthy
+        web4:
           condition: service_healthy
