@@ -75,3 +75,5 @@ services:
           condition: service_healthy
         web3:
           condition: service_healthy
+        web4:
+          condition: service_healthy
