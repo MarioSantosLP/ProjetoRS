@@ -278,8 +278,9 @@ async def weighted_stats(pool: list[str] | None = None) -> str | None:
     
 
 
-def _candidates_for_workload(workload_type: str | None) -> list[str]:
-    active = _enabled()
+def _candidates_for_workload(workload_type: str | None, exclude: set[str] | None = None) -> list[str]:
+    exclude = exclude or set()
+    active = [c for c in _enabled() if c not in exclude]
 
     if workload_type not in ("cpu", "memory"):
         return active
@@ -292,9 +293,9 @@ def _candidates_for_workload(workload_type: str | None) -> list[str]:
     return active
 
 
-async def pick_by_role(workload_type: str | None, algorithm: str, session=None) -> str | None:
+async def pick_by_role(workload_type: str | None, algorithm: str, session=None, exclude: set[str] | None = None) -> str | None:
     
-    pool = _candidates_for_workload(workload_type)
+    pool = _candidates_for_workload(workload_type, exclude)
 
     if algorithm == "round_robin":
         result = round_robin(pool)

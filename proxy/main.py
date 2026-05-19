@@ -230,18 +230,31 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
     trace(req_id, "queue", "dequeued", workload=workload_type or "any")
 
     container = None
+    tried: set[str] = set()
+
     for _ in range(len(lb.CONTAINERS)):
-        candidate = await lb.pick_by_role(workload_type, LOAD_BALANCER, app["session"])
+        candidate = await lb.pick_by_role(
+            workload_type,
+            LOAD_BALANCER,
+            app["session"],
+            exclude=tried,
+        )
+
         if candidate is None:
             break
+
+        tried.add(candidate)
+
         if circuit_breakers[candidate].is_open():
             log.warning(f"[{req_id}] Circuit open for {candidate}, trying another")
             trace(req_id, "circuit", "open", container=candidate)
             continue
-        if not await ping_container(app, candidate):
+
+        if not await ping_container(app, candidate, force=True):
             circuit_breakers[candidate].record_failure()
             trace(req_id, "health", "unreachable", container=candidate)
             continue
+
         container = candidate
         break
 
@@ -324,14 +337,37 @@ async def ws_handle(request: web.Request) -> web.StreamResponse:
 
     trace(req_id, "websocket", "received", path=request.path, client=request.remote or "")
     
-    container = await lb.pick_by_role(None, LOAD_BALANCER, request.app["session"])
+    container = None
+    tried: set[str] = set()
+
+    for _ in range(len(lb.CONTAINERS)):
+        candidate = await lb.pick_by_role(
+            None,
+            LOAD_BALANCER,
+            request.app["session"],
+            exclude=tried,
+        )
+
+        if candidate is None:
+            break
+
+        tried.add(candidate)
+
+        if circuit_breakers[candidate].is_open():
+            trace(req_id, "circuit", "open", container=candidate)
+            continue
+
+        if not await ping_container(request.app, candidate, force=True):
+            circuit_breakers[candidate].record_failure()
+            trace(req_id, "health", "unreachable", container=candidate)
+            continue
+
+        container = candidate
+        break
+
     if container is None:
         trace(req_id, "websocket", "no_container")
         return web.Response(status=503, text="No containers available")
-    
-    if circuit_breakers[container].is_open():
-        trace(req_id, "circuit", "open", container=container)
-        return web.Response(status=503)
     
     ws_client = web.WebSocketResponse()
     await ws_client.prepare(request)
