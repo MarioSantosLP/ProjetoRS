@@ -18,6 +18,7 @@ CONFIG_PATH = "config/config.json"
 CONTAINERS : list[str] = []
 DOCKER_NAMES : dict[str, str] = {}
 CONTAINER_ROLES : dict[str, str] = {}
+DOCKER_HOSTS : dict[str, str] = {}  # url -> docker host (local socket or remote TCP)
 
 container_stats : dict[str, dict] = {}
 probe_stats : dict[str, dict] = {}
@@ -55,6 +56,8 @@ def load_config() -> None:
             CONTAINERS.append(url)
             DOCKER_NAMES[url] = entry["docker_name"]
             CONTAINER_ROLES[url] = entry.get("role", "general")
+            # if no docker_host is set, fall back to local socket (single machine setup)
+            DOCKER_HOSTS[url] = entry.get("docker_host", "unix:///var/run/docker.sock")
             container_stats.setdefault(url, _default_container_stats())
             probe_stats.setdefault(url, default_probe_stats())
             _active_connection.setdefault(url, 0)
@@ -62,7 +65,7 @@ def load_config() -> None:
     log.info(f"Config loaded the conts {CONTAINERS}")
 
 
-def reload_config() -> tuple[list[str], list [str]]:
+def reload_config() -> tuple[list[str], list[str]]:
 
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
@@ -78,6 +81,8 @@ def reload_config() -> tuple[list[str], list [str]]:
         url = entry["url"]
         DOCKER_NAMES[url] = entry["docker_name"]
         CONTAINER_ROLES[url] = entry.get("role", "general")
+        # if no docker_host is set, fall back to local socket (single machine setup)
+        DOCKER_HOSTS[url] = entry.get("docker_host", "unix:///var/run/docker.sock")
         if url not in CONTAINERS:
             CONTAINERS.append(url)
         container_stats.setdefault(url, _default_container_stats())
@@ -91,6 +96,7 @@ def reload_config() -> tuple[list[str], list [str]]:
         DISABLED_CONTAINERS.add(url)
         DOCKER_NAMES.pop(url, None)
         CONTAINER_ROLES.pop(url, None)
+        DOCKER_HOSTS.pop(url, None)
 
         if url in container_stats:
             container_stats[url]["healthy"] = False
@@ -121,28 +127,6 @@ def round_robin(pool: list[str] | None = None) -> str:
     return container
 
 
-#store container stats
-container_stats: dict[str, dict] = {
-    c: {
-        "cpu": 0.0,
-        "mem": 0.0,
-        "healthy": True,
-        "last_seen": 0.0,
-    }
-    for c in CONTAINERS
-}
-
-probe_stats: dict[str, dict] = {
-    c: {
-        "healthy": False,
-        "latency_ms": None,
-        "last_seen": 0.0,
-    }
-    for c in CONTAINERS
-}
-
-_active_connection: dict[str, int] = {c: 0 for c in CONTAINERS}
-
 def conn_acquired(container: str) -> None:
     _active_connection[container] += 1
     log.debug(f"conn_acquired {container} -> active={_active_connection[container]}")
@@ -157,14 +141,13 @@ PROBE_TIMEOUT = 1
 PROBE_INTERVAL = 2      
 PROBE_STALE = 6
 
-#define weight of each contst
+#define weight of each const
 
 #tarefas mais tasking para memoria ou para cpu 
 #ter containers para cpu e mem e o cliente diz se é mem intensive ou cpu 
 #temos um byte no pedido com esta infromação 
 #e o load balancer escolhe o melhor container para o pedido com base nisso
 #create chaos demos aswell
-
 
 W_CPU = 0.4
 W_MEM = 0.3
@@ -245,7 +228,7 @@ async def active_probe_loop(session: ClientSession) -> None:
     log.info("Starting active probing loop")
 
     while True:
-        targets =list (CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
+        targets = list(CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
         await asyncio.gather(
             *(probe_container(session, container) for container in targets)
         )
@@ -274,8 +257,6 @@ async def weighted_stats(pool: list[str] | None = None) -> str | None:
         return W_CPU * cpu_score + W_MEM * mem_score + W_CONN * conn_score
 
     return min(fresh, key=score)
-
-    
 
 
 def _candidates_for_workload(workload_type: str | None, exclude: set[str] | None = None) -> list[str]:
@@ -312,61 +293,72 @@ async def pick_by_role(workload_type: str | None, algorithm: str, session=None, 
     return result
 
 
-async def health_loop()-> None:
-
-
+async def health_loop() -> None:
     log.info("Starting health loop")
 
-    async with aiodocker.Docker() as docker:
-        while True:
-            targets = list(CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
-            for container in targets:
-                try:
-                    name = DOCKER_NAMES[container]
-                    c = await docker.containers.get(name)
-                    stats = await c.stats(stream=False) #get container stats
-                    stats = stats[0] #only need first one from the dict
-                    #print(stats) 
+    while True:
+        targets = list(CONTAINERS)  # make a copy to avoid issues if CONTAINERS changes during hot reload
 
-                    # CPU % calculation  Docker's own CLI source:
-                    # https://github.com/moby/moby/blob/eb131c5383db8cac633919f82abad86c99bffbe5/cli/command/container/stats_helpers.go#L175
-                    # cpu_delta  = current total CPU usage - previous(precpu) total CPU usage
-                    # sys_delta  = current system CPU usage - previous system CPU usage
-                    # cpu%       = (cpu_delta / sys_delta) * num_cpus * 100
+        # group containers by their docker host so we open one connection per machine
+        # containers without docker_host use the local socket
+        host_groups: dict[str, list[str]] = {}
+        for container in targets:
+            host = DOCKER_HOSTS.get(container, "unix:///var/run/docker.sock")
+            host_groups.setdefault(host, []).append(container)
 
-                    #precpu stats are from the last snapshot (docker always gives us 2 snapshots)
-                    #total_usage is the time the cpu has been used in ns
-                    cpu_diff = (
-                        stats["cpu_stats"]["cpu_usage"]["total_usage"]
-                        - stats["precpu_stats"]["cpu_usage"]["total_usage"]
-                    )
+        for docker_host, containers in host_groups.items():
+            try:
+                async with aiodocker.Docker(url=docker_host) as docker:
+                    for container in containers:
+                        try:
+                            name = DOCKER_NAMES[container]
+                            c = await docker.containers.get(name)
+                            stats = await c.stats(stream=False) #get container stats
+                            stats = stats[0] #only need first one from the dict
 
+                            # CPU % calculation  Docker's own CLI source:
+                            # https://github.com/moby/moby/blob/eb131c5383db8cac633919f82abad86c99bffbe5/cli/command/container/stats_helpers.go#L175
+                            # cpu_delta  = current total CPU usage - previous(precpu) total CPU usage
+                            # sys_delta  = current system CPU usage - previous system CPU usage
+                            # cpu%       = (cpu_delta / sys_delta) * num_cpus * 100
 
-                    system_diff = (
-                        stats["cpu_stats"]["system_cpu_usage"]
-                        - stats["precpu_stats"]["system_cpu_usage"]
-                    )
+                            #precpu stats are from the last snapshot (docker always gives us 2 snapshots)
+                            #total_usage is the time the cpu has been used in ns
+                            cpu_diff = (
+                                stats["cpu_stats"]["cpu_usage"]["total_usage"]
+                                - stats["precpu_stats"]["cpu_usage"]["total_usage"]
+                            )
 
-                    num_cpus = stats["cpu_stats"].get("online_cpus", 1)
-                    cpu = (cpu_diff / system_diff) * num_cpus * 100 if system_diff > 0 else 0.0 
+                            system_diff = (
+                                stats["cpu_stats"]["system_cpu_usage"]
+                                - stats["precpu_stats"]["system_cpu_usage"]
+                            )
 
-                    container_stats[container]["cpu"] = round(cpu, 2)
-                    container_stats[container]["healthy"] = True
-                    container_stats[container]["last_seen"] = time.monotonic()
+                            num_cpus = stats["cpu_stats"].get("online_cpus", 1)
+                            cpu = (cpu_diff / system_diff) * num_cpus * 100 if system_diff > 0 else 0.0
 
-                    #mem calc
+                            container_stats[container]["cpu"] = round(cpu, 2)
+                            container_stats[container]["healthy"] = True
+                            container_stats[container]["last_seen"] = time.monotonic()
 
-                    mem_stats = stats["memory_stats"]
-                    mem_usage  = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
-                    mem_limit  = mem_stats.get("limit", 1)  # bytes; avoid /0
-                    mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
-                    container_stats[container]["mem"] = round(mem, 2)
-    
-                except Exception as e:
-                    log.warning(f"Failed to get stats for {container}: {e}")
+                            #mem calc
+                            mem_stats = stats["memory_stats"]
+                            mem_usage = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
+                            mem_limit = mem_stats.get("limit", 1)  # bytes; avoid /0
+                            mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
+                            container_stats[container]["mem"] = round(mem, 2)
+
+                        except Exception as e:
+                            log.warning(f"Failed to get stats for {container}: {e}")
+                            container_stats[container]["healthy"] = False
+
+            except Exception as e:
+                # entire machine is down — mark all its containers as unhealthy
+                log.warning(f"Failed to connect to Docker at {docker_host}: {e}")
+                for container in containers:
                     container_stats[container]["healthy"] = False
 
-            await asyncio.sleep(5) #wait 5s before next check
+        await asyncio.sleep(5) #wait 5s before next check
 
 if __name__ == "__main__":
     asyncio.run(health_loop())

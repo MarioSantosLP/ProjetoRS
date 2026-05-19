@@ -1,0 +1,26 @@
+{
+    "containers": [
+        {
+            "url": "http://web1:8000",
+            "docker_name": "proxy-web1",
+            "role": "cpu"
+        },
+        {
+            "url": "http://web2:8000",
+            "docker_name": "proxy-web2",
+            "role": "memory"
+        },
+        {
+            "url": "http://192.168.1.XX:8000",
+            "docker_name": "proxy-web3",
+            "role": "cpu",
+            "docker_host": "tcp://192.168.1.XX:2375"
+        },
+        {
+            "url": "http://192.168.1.XX:8002",
+            "docker_name": "proxy-web4",
+            "role": "memory",
+            "docker_host": "tcp://192.168.1.XX:2375"
+        }
+    ]
+}
