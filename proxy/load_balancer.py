@@ -79,6 +79,7 @@ def reload_config() -> tuple[list[str], list[str]]:
     #add conts
     for entry in cfg["containers"]:
         url = entry["url"]
+        DISABLED_CONTAINERS.discard(url) #fix bug where stays disabled
         DOCKER_NAMES[url] = entry["docker_name"]
         CONTAINER_ROLES[url] = entry.get("role", "general")
         # if no docker_host is set, fall back to local socket (single machine setup)

@@ -47,7 +47,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "weighted"
+LOAD_BALANCER = "round_robin" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
