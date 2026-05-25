@@ -2,6 +2,8 @@ services:
   web1:
     build: .
     container_name: proxy-web1
+    cap_add:
+    - NET_ADMIN
     environment:
       - SERVICE_NAME=web1
     ports:

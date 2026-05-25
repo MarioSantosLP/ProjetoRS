@@ -1,28 +1,19 @@
 {
-    "containers": [
-        {
-            "url": "http://web1:8000",
-            "docker_name": "proxy-web1",
-            "role": "cpu"
-        },
-        {
-            "url": "http://web2:8000",
-            "docker_name": "proxy-web2",
-            "role": "memory"
-        },
-        {
-            "url": "http://192.168.1.108:8003",
-            "docker_name": "proxy-web3",
-            "role": "cpu",
-            "docker_host": "tcp://192.168.1.108:2375",
-            "grpc_url": "192.168.1.108:50053"
-        },
-        {
-            "url": "http://192.168.1.108:8004",
-            "docker_name": "proxy-web4",
-            "role": "memory",
-            "docker_host": "tcp://192.168.1.108:2375",
-            "grpc_url": "192.168.1.108:50054"
-        }
-    ]
+  "containers": [
+    {
+      "url": "http://web1:8000",
+      "docker_name": "proxy-web1",
+      "role": "cpu"
+    },
+    {
+      "url": "http://web2:8000",
+      "docker_name": "proxy-web2",
+      "role": "memory"
+    },
+    {
+      "url": "http://web4:8000",
+      "docker_name": "proxy-web4",
+      "role": "memory"
+    }
+  ]
 }
