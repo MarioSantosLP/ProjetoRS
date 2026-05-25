@@ -47,7 +47,7 @@ start_time = time.time()
 
 
 #needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "active_probe" #weighted, cpu_aware, active_probe, round_robin 
+LOAD_BALANCER = "round_robin" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -74,9 +74,11 @@ def _init_container(container: str) -> None:
     circuit_breakers.setdefault(container, CircuitBreaker())
  
  
-def _remove_container(container: str) -> None:
-    _init_container(container)
-    health_cache[container] = {"reachable": False, "checked_at": time.time()}
+def _remove_container(container: str) -> None: #changed from init
+    health_cache.pop(container, None)
+    circuit_breakers.pop(container, None)
+    error_count.pop(container, None)
+    request_count.pop(container, None)
 
 
 def trace(req_id: str, component: str, event: str, **kwargs) -> None:

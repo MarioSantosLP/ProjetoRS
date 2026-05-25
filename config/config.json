@@ -11,9 +11,15 @@
       "role": "memory"
     },
     {
+      "url": "http://web3:8000",
+      "docker_name": "proxy-web3",
+      "role": "cpu"
+    },
+    {
       "url": "http://web4:8000",
       "docker_name": "proxy-web4",
       "role": "memory"
     }
+
   ]
 }

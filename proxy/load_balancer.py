@@ -103,6 +103,9 @@ def reload_config() -> tuple[list[str], list[str]]:
         CONTAINER_ROLES.pop(url, None)
         DOCKER_HOSTS.pop(url, None)
         GRPC_URLS.pop(url, None)
+        container_stats.pop(url, None)
+        probe_stats.pop(url, None)
+        _active_connection.pop(url, None)
 
         if url in container_stats:
             container_stats[url]["healthy"] = False
