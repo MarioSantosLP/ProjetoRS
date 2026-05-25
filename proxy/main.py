@@ -162,9 +162,7 @@ async def startup_lb_loops(app: web.Application) -> None:
 
 async def startup_grpc_channels(app: web.Application) -> None:
     app["grpc_channels"] = {
-        container: grpc.aio.insecure_channel(
-            container.replace("http://", "").split(":")[0] + ":50051"
-        )
+        container: grpc.aio.insecure_channel(lb.GRPC_URLS[container])
         for container in lb.CONTAINERS
     }
     log.info("gRPC channels created")
@@ -198,8 +196,7 @@ async def admin_reload(request: web.Request) -> web.Response:
  
         for container in added:
             _init_container(container)
-            grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
-            request.app["grpc_channels"][container] = grpc.aio.insecure_channel(grpc_host)
+            request.app["grpc_channels"][container] = grpc.aio.insecure_channel(lb.GRPC_URLS[container])
             reachable = await ping_container(request.app, container, force=True)
             log.info(f"[reload] New container {container} — reachable: {reachable}")
  

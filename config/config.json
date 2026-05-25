@@ -11,15 +11,18 @@
             "role": "memory"
         },
         {
-            "url": "http://web3:8000",
+            "url": "http://192.168.1.108:8003",
             "docker_name": "proxy-web3",
-            "role": "cpu"
+            "role": "cpu",
+            "docker_host": "tcp://192.168.1.108:2375",
+            "grpc_url": "192.168.1.108:50053"
         },
         {
-            "url": "http://web4:8000",
+            "url": "http://192.168.1.108:8004",
             "docker_name": "proxy-web4",
-            "role": "memory"
+            "role": "memory",
+            "docker_host": "tcp://192.168.1.108:2375",
+            "grpc_url": "192.168.1.108:50054"
         }
-
     ]
 }

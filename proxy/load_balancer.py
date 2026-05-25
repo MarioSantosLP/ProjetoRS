@@ -19,6 +19,7 @@ CONTAINERS : list[str] = []
 DOCKER_NAMES : dict[str, str] = {}
 CONTAINER_ROLES : dict[str, str] = {}
 DOCKER_HOSTS : dict[str, str] = {}  # url -> docker host (local socket or remote TCP)
+GRPC_URLS : dict[str, str] = {}     # url -> grpc address (host:port)
 
 container_stats : dict[str, dict] = {}
 probe_stats : dict[str, dict] = {}
@@ -58,6 +59,8 @@ def load_config() -> None:
             CONTAINER_ROLES[url] = entry.get("role", "general")
             # if no docker_host is set, fall back to local socket (single machine setup)
             DOCKER_HOSTS[url] = entry.get("docker_host", "unix:///var/run/docker.sock")
+            # if no grpc_url is set, derive it from the container url (local containers use internal DNS + port 50051)
+            GRPC_URLS[url] = entry.get("grpc_url") or (url.replace("http://", "").split(":")[0] + ":50051")
             container_stats.setdefault(url, _default_container_stats())
             probe_stats.setdefault(url, default_probe_stats())
             _active_connection.setdefault(url, 0)
@@ -84,6 +87,7 @@ def reload_config() -> tuple[list[str], list[str]]:
         CONTAINER_ROLES[url] = entry.get("role", "general")
         # if no docker_host is set, fall back to local socket (single machine setup)
         DOCKER_HOSTS[url] = entry.get("docker_host", "unix:///var/run/docker.sock")
+        GRPC_URLS[url] = entry.get("grpc_url") or (url.replace("http://", "").split(":")[0] + ":50051")
         if url not in CONTAINERS:
             CONTAINERS.append(url)
         container_stats.setdefault(url, _default_container_stats()) #could use an if but found this cleaver method
@@ -98,6 +102,7 @@ def reload_config() -> tuple[list[str], list[str]]:
         DOCKER_NAMES.pop(url, None)
         CONTAINER_ROLES.pop(url, None)
         DOCKER_HOSTS.pop(url, None)
+        GRPC_URLS.pop(url, None)
 
         if url in container_stats:
             container_stats[url]["healthy"] = False

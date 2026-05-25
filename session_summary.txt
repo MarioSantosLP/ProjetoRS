@@ -1,0 +1,140 @@
+================================================================================
+SESSION SUMMARY — feat/multimachine
+Date: 2026-05-25
+================================================================================
+
+PROBLEM
+-------
+Multi-machine setup was configured but requests only reached web1 and web2.
+Web3 and web4 (on colleague's machine at 192.168.1.108) were never hit.
+
+ROOT CAUSES FOUND
+-----------------
+1. Firewall on colleague's machine blocking ports 8003, 8004, 50053, 50054.
+   The proxy health check sends HTTP to {container}/ping before routing —
+   if that fails, the container is skipped entirely.
+
+2. gRPC channels were built by stripping the port and hardcoding :50051.
+   Remote containers expose gRPC on 50053 and 50054, not 50051, so all
+   gRPC calls to web3/web4 would have failed even if health checks passed.
+
+CHANGES MADE
+------------
+proxy/load_balancer.py
+  - Added GRPC_URLS dict to store the gRPC address per container.
+  - load_config() and reload_config() now read "grpc_url" from config,
+    falling back to derived hostname:50051 for local containers.
+  - reload_config() also cleans up GRPC_URLS on container removal.
+
+proxy/main.py
+  - startup_grpc_channels() now uses lb.GRPC_URLS[container] instead of
+    hardcoded port 50051.
+  - admin_reload() does the same for newly added containers.
+
+config/config.json and config/config.remote.json
+  - Added "grpc_url": "192.168.1.108:50053" to web3 entry.
+  - Added "grpc_url": "192.168.1.108:50054" to web4 entry.
+
+COLLEAGUE SETUP (no config changes needed on their side)
+---------------------------------------------------------
+They only run web3 and web4, not the proxy. They needed to:
+  sudo ufw allow 8003
+  sudo ufw allow 8004
+  sudo ufw allow 50053
+  sudo ufw allow 50054
+  sudo ufw allow 2375
+  docker compose up web3 web4
+
+================================================================================
+TESTING
+================================================================================
+
+--- TEST 1: Basic connectivity ---
+
+Command:
+  curl http://192.168.1.108:8003/ping
+  curl http://192.168.1.108:8004/ping
+
+Expected: HTTP 200 with service name and status ok
+Result:   PASSED — ports reachable after colleague opened firewall
+
+--- TEST 2: Round robin across all 4 containers ---
+
+Command:
+  for i in {1..4}; do curl -s http://localhost:8080/test; echo; done
+
+Expected: Requests distributed across all 4 containers
+Result:   PASSED
+  {"service": "web3", "path": "/test", "method": "GET"}
+  {"service": "web4", "path": "/test", "method": "GET"}
+  {"service": "web1", "path": "/test", "method": "GET"}
+  {"service": "web2", "path": "/test", "method": "GET"}
+
+--- TEST 3: Traffic shaping — 100ms latency ---
+
+Commands:
+  sudo tc qdisc add dev wlp1s0 root netem delay 100ms
+  for i in {1..20}; do curl -s http://localhost:8080/test; echo; done
+  curl -s http://localhost:8080/metrics
+  sudo tc qdisc del dev wlp1s0 root
+
+Expected:
+  - web1/web2 unaffected (local Docker, no latency added)
+  - web3/web4 noticeably slower (traffic goes through wlp1s0)
+  - probe_stats shows higher latency_ms for 192.168.1.108 containers
+
+Result:   PASSED — web3/web4 showed increased response times,
+          web1/web2 were unaffected.
+
+--- TEST 4: Traffic shaping — 10% packet loss ---
+
+Commands:
+  sudo tc qdisc add dev wlp1s0 root netem loss 10%
+  for i in {1..20}; do curl -s http://localhost:8080/test; echo; done
+  curl -s http://localhost:8080/metrics
+  sudo tc qdisc del dev wlp1s0 root
+
+Expected:
+  - Some requests to web3/web4 slower due to TCP retransmits
+  - Possible 502s if gRPC times out
+  - Circuit breaker may open for web3/web4 after repeated failures
+  - Active probe may mark web3/web4 as unhealthy (1s probe timeout)
+
+Result:   PARTIAL — web4 probe marked unhealthy (healthy: false,
+          latency_ms: null), web3 probe spiked to 285ms. No actual
+          request errors (errors_per_container all 0) because TCP
+          recovered. Distribution remained even since algorithm is
+          round_robin (ignores probe health). Switching to active_probe
+          would stop routing to web4 when its probe fails.
+
+Metrics snapshot (packet loss test):
+  total_requests: 154
+  requests_per_container:
+    web1: 39, web2: 39, web3: 38, web4: 38
+  errors_per_container:
+    all 0
+  probe_stats:
+    web1: healthy, latency 4.21ms
+    web2: healthy, latency 3.54ms
+    web3: healthy, latency 285.69ms
+    web4: unhealthy, latency null
+
+--- TEST 5: Combined latency + packet loss ---
+
+Commands:
+  sudo tc qdisc add dev wlp1s0 root netem delay 100ms loss 5%
+  for i in {1..20}; do curl -s http://localhost:8080/test; echo; done
+  curl -s http://localhost:8080/metrics
+  sudo tc qdisc del dev wlp1s0 root
+
+================================================================================
+NOTES
+================================================================================
+- Workload-based routing (X-Workload-Type header) routes memory workloads
+  to web2/web4 and cpu workloads to web1/web3. Observed to not always filter
+  correctly under round_robin — switching to active_probe is recommended for
+  production use as it respects probe health when selecting candidates.
+
+- Colleague does not need to pull or change any config. All proxy-side changes
+  live in proxy/ and config/, which only the proxy machine uses.
+================================================================================
