@@ -86,7 +86,7 @@ def reload_config() -> tuple[list[str], list[str]]:
         DOCKER_HOSTS[url] = entry.get("docker_host", "unix:///var/run/docker.sock")
         if url not in CONTAINERS:
             CONTAINERS.append(url)
-        container_stats.setdefault(url, _default_container_stats())
+        container_stats.setdefault(url, _default_container_stats()) #could use an if but found this cleaver method
         probe_stats.setdefault(url, default_probe_stats())
         _active_connection.setdefault(url, 0)
 
@@ -123,7 +123,7 @@ def round_robin(pool: list[str] | None = None) -> str:
     if not candidates:
         return None
 
-    container = candidates[_rr_index % len(candidates)]
+    container = candidates[_rr_index % len(candidates)] #0 % 3 cont1
     _rr_index += 1
     return container
 
@@ -141,14 +141,6 @@ def conn_released(container: str) -> None:
 PROBE_TIMEOUT = 1
 PROBE_INTERVAL = 2      
 PROBE_STALE = 6
-
-#define weight of each const
-
-#tarefas mais tasking para memoria ou para cpu 
-#ter containers para cpu e mem e o cliente diz se é mem intensive ou cpu 
-#temos um byte no pedido com esta infromação 
-#e o load balancer escolhe o melhor container para o pedido com base nisso
-#create chaos demos aswell
 
 W_CPU = 0.4
 W_MEM = 0.3
