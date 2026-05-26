@@ -146,6 +146,7 @@ def conn_released(container: str) -> None:
         log.debug(f"conn_released {container} -> active={_active_connection[container]}")
 
 
+#global vars
 PROBE_TIMEOUT = 1
 PROBE_INTERVAL = 2      
 PROBE_STALE = 6

@@ -48,7 +48,7 @@ start_time = time.time()
 
 
 
-LOAD_BALANCER = "round_robin" #weighted, cpu_aware, active_probe, round_robin 
+LOAD_BALANCER = "cpu_aware" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -109,7 +109,7 @@ async def metrics(request: web.Request) -> web.Response:
 
     })
 
-#helper to check if alive so we dont need to do it twice
+#basically a func to keep build a cache of pings instead of doing one every time
 async def ping_container(app: web.Application, container: str, force: bool = False) -> bool:
     now = time.time()
     cached = health_cache[container]
@@ -134,7 +134,7 @@ async def ping_container(app: web.Application, container: str, force: bool = Fal
 async def startup_session(app: web.Application) -> None:
     app["session"] = ClientSession()
 
-async def startup_forward(app: web.Application) -> None:
+async def startup_forward(app: web.Application) -> None: #just so there is no need to import 
     app["forward"] = forward
 
 async def close_session(app: web.Application) -> None:
@@ -158,6 +158,8 @@ async def startup_health_check(app: web.Application) -> None:
         log.info(f"{container} {'reachable' if reachable else 'unreachable'}")
 
 async def startup_lb_loops(app: web.Application) -> None:
+    #startup the lb loops in background
+    
     asyncio.ensure_future(lb.health_loop())
     asyncio.ensure_future(lb.active_probe_loop(app["session"]))
     log.info("Load balancer loops started")
@@ -231,7 +233,7 @@ async def handle(request: web.Request) -> web.StreamResponse:
         return await ws_handle(request)
     global total_requests
     req_id = str(uuid.uuid4())[:8]
-    body = await request.read()  # must read here — stream can't be consumed inside the worker
+    body = await request.read()  # must read here stream can't be consumed inside the worker (bug fixed: no more empty body)
     total_requests += 1
     log.info(f"[{req_id}] {request.method} {request.path} (from {request.remote})")
     trace(req_id, "gateway", "received", method=request.method, path=request.path, client=request.remote or "")
