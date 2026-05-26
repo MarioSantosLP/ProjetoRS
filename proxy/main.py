@@ -27,6 +27,7 @@ handler = RotatingFileHandler(
     maxBytes= 2 * 1024 * 1024 , #rotates when log file reaches 2MB
     backupCount=5,
 )
+
 handler.setFormatter(logging.Formatter(
     fmt="%(asctime)s %(message)s",
     datefmt="%H:%M:%S",
@@ -36,11 +37,6 @@ logging.basicConfig(level=logging.DEBUG, handlers=[handler])
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 log = logging.getLogger("proxy")
 
-# the containers
-CONTAINERS = [
-    "http://web1:8000",
-    "http://web2:8000",
-]
 
 HEALTH_TTL = 3
 
@@ -51,8 +47,8 @@ total_requests = 0
 start_time = time.time()
 
 
-#needed for status(should change when we do many load balancers later)
-LOAD_BALANCER = "weighted"
+
+LOAD_BALANCER = "cpu_aware" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -79,9 +75,11 @@ def _init_container(container: str) -> None:
     circuit_breakers.setdefault(container, CircuitBreaker())
  
  
-def _remove_container(container: str) -> None:
-    _init_container(container)
-    health_cache[container] = {"reachable": False, "checked_at": time.time()}
+def _remove_container(container: str) -> None: #changed from init
+    health_cache.pop(container, None)
+    circuit_breakers.pop(container, None)
+    error_count.pop(container, None)
+    request_count.pop(container, None)
 
 
 def trace(req_id: str, component: str, event: str, **kwargs) -> None:
@@ -111,7 +109,7 @@ async def metrics(request: web.Request) -> web.Response:
 
     })
 
-#helper to check if alive so we dont need to do it twice
+#basically a func to keep build a cache of pings instead of doing one every time
 async def ping_container(app: web.Application, container: str, force: bool = False) -> bool:
     now = time.time()
     cached = health_cache[container]
@@ -136,7 +134,7 @@ async def ping_container(app: web.Application, container: str, force: bool = Fal
 async def startup_session(app: web.Application) -> None:
     app["session"] = ClientSession()
 
-async def startup_forward(app: web.Application) -> None:
+async def startup_forward(app: web.Application) -> None: #just so there is no need to import 
     app["forward"] = forward
 
 async def close_session(app: web.Application) -> None:
@@ -160,9 +158,24 @@ async def startup_health_check(app: web.Application) -> None:
         log.info(f"{container} {'reachable' if reachable else 'unreachable'}")
 
 async def startup_lb_loops(app: web.Application) -> None:
+    #startup the lb loops in background
+    
     asyncio.ensure_future(lb.health_loop())
     asyncio.ensure_future(lb.active_probe_loop(app["session"]))
     log.info("Load balancer loops started")
+
+
+async def startup_grpc_channels(app: web.Application) -> None:
+    app["grpc_channels"] = {
+        container: grpc.aio.insecure_channel(lb.GRPC_URLS[container])
+        for container in lb.CONTAINERS
+    }
+    log.info("gRPC channels created")
+
+async def close_grpc_channels(app: web.Application) -> None:
+    for channel in app["grpc_channels"].values():
+        await channel.close()
+    log.info("gRPC channels closed")
 
 
 async def status(request: web.Request) -> web.Response:
@@ -188,11 +201,15 @@ async def admin_reload(request: web.Request) -> web.Response:
  
         for container in added:
             _init_container(container)
+            request.app["grpc_channels"][container] = grpc.aio.insecure_channel(lb.GRPC_URLS[container])
             reachable = await ping_container(request.app, container, force=True)
             log.info(f"[reload] New container {container} — reachable: {reachable}")
  
         for container in removed:
             _remove_container(container)
+            ch = request.app["grpc_channels"].pop(container, None)
+            if ch:
+                await ch.close()
             log.info(f"[reload] Removed container {container}")
  
         return web.json_response({
@@ -212,10 +229,11 @@ async def admin_reload(request: web.Request) -> web.Response:
 
 async def handle(request: web.Request) -> web.StreamResponse:
     if (request.headers.get("Upgrade","").lower() == "websocket"):
+        #they dont go into priority queue because its a long lived conn and it would block the queue
         return await ws_handle(request)
     global total_requests
     req_id = str(uuid.uuid4())[:8]
-    body = await request.read()  # must read here — stream can't be consumed inside the worker
+    body = await request.read()  # must read here stream can't be consumed inside the worker (bug fixed: no more empty body)
     total_requests += 1
     log.info(f"[{req_id}] {request.method} {request.path} (from {request.remote})")
     trace(req_id, "gateway", "received", method=request.method, path=request.path, client=request.remote or "")
@@ -250,7 +268,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
             trace(req_id, "circuit", "open", container=candidate)
             continue
 
-        if not await ping_container(app, candidate, force=True):
+        if not lb.probe_stats.get(candidate, {}).get("healthy", False):
             circuit_breakers[candidate].record_failure()
             trace(req_id, "health", "unreachable", container=candidate)
             continue
@@ -283,40 +301,40 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
     headers["X-Forwarded-For"] = f"{existing_xff}, {client_ip}".strip(", ") if existing_xff else client_ip
     headers["X-Request-ID"] = req_id
 
-    # converte o host HTTP para endereço gRPC (porta 50051)
-    grpc_host = container.replace("http://", "").split(":")[0] + ":50051"
-
     try:
         t_sent = time.monotonic()
-        async with grpc.aio.insecure_channel(grpc_host) as channel:
-            stub = service_pb2_grpc.WebServiceStub(channel)
-            grpc_request = service_pb2.HttpRequest(
-                method=request.method,
-                path=request.path,
-                body=body,
-                headers=headers,
-            )
-            grpc_response = await stub.HandleRequest(grpc_request)
-            elapsed_ms = round((time.monotonic() - t_start) * 1000)
-            backend_ms = round((time.monotonic() - t_sent) * 1000)
-            circuit_breakers[container].record_success()
-            log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
-            trace(req_id, "proxy", "responded", status=grpc_response.status,
-                  total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
-            lb.conn_released(container)  # decrement active connections
-            return web.Response(
-                status=grpc_response.status,
-                body=grpc_response.body,
-                headers=dict(grpc_response.headers),
-            )
+        channel = app["grpc_channels"].get(container)
+        if channel is None:
+            raise RuntimeError(f"No gRPC channel for {container}")
+        stub = service_pb2_grpc.WebServiceStub(channel)
+        grpc_request = service_pb2.HttpRequest(
+            method=request.method,
+            path=request.path,
+            body=body,
+            headers=headers,
+        )
+        grpc_response = await stub.HandleRequest(grpc_request)
+        elapsed_ms = round((time.monotonic() - t_start) * 1000)
+        backend_ms = round((time.monotonic() - t_sent) * 1000)
+        circuit_breakers[container].record_success()
+        log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
+        trace(req_id, "proxy", "responded", status=grpc_response.status,
+              total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
+        return web.Response(
+            status=grpc_response.status,
+            body=grpc_response.body,
+            headers=dict(grpc_response.headers),
+        )
 
     except Exception as e:
         error_count[container] += 1
         circuit_breakers[container].record_failure()
         trace(req_id, "proxy", "error", container=container, error=str(e))
         log.error(f"[{req_id}] gRPC failed for {container}: {e}")
-        lb.conn_released(container)  # decrement even on failure
         return web.Response(status=502, text="Container unavailable")
+
+    finally:
+        lb.conn_released(container)
 
 async def trace_endpoint(request: web.Request) -> web.Response:
     req_id = request.match_info["req_id"]
@@ -357,7 +375,7 @@ async def ws_handle(request: web.Request) -> web.StreamResponse:
             trace(req_id, "circuit", "open", container=candidate)
             continue
 
-        if not await ping_container(request.app, candidate, force=True):
+        if not lb.probe_stats.get(candidate, {}).get("healthy", False):
             circuit_breakers[candidate].record_failure()
             trace(req_id, "health", "unreachable", container=candidate)
             continue
@@ -439,7 +457,9 @@ app.on_startup.append(startup_config)
 app.on_startup.append(startup_queue)
 app.on_startup.append(startup_health_check) #basically for debug 
 app.on_startup.append(startup_lb_loops) # start load balancer background loops on startup
+app.on_startup.append(startup_grpc_channels)
 app.on_cleanup.append(shutdown_queue)
+app.on_cleanup.append(close_grpc_channels)
 app.on_cleanup.append(close_session)
 
 app.router.add_get("/metrics", metrics)

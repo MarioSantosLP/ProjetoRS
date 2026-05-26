@@ -14,3 +14,4 @@ grpc
 json
 sys
 *.sh
+*.txt
