@@ -27,6 +27,7 @@ handler = RotatingFileHandler(
     maxBytes= 2 * 1024 * 1024 , #rotates when log file reaches 2MB
     backupCount=5,
 )
+
 handler.setFormatter(logging.Formatter(
     fmt="%(asctime)s %(message)s",
     datefmt="%H:%M:%S",
@@ -46,7 +47,7 @@ total_requests = 0
 start_time = time.time()
 
 
-#needed for status(should change when we do many load balancers later)
+
 LOAD_BALANCER = "round_robin" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
@@ -265,7 +266,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
             trace(req_id, "circuit", "open", container=candidate)
             continue
 
-        if not await ping_container(app, candidate, force=True):
+        if not lb.probe_stats.get(candidate, {}).get("healthy", False):
             circuit_breakers[candidate].record_failure()
             trace(req_id, "health", "unreachable", container=candidate)
             continue
@@ -372,7 +373,7 @@ async def ws_handle(request: web.Request) -> web.StreamResponse:
             trace(req_id, "circuit", "open", container=candidate)
             continue
 
-        if not await ping_container(request.app, candidate, force=True):
+        if not lb.probe_stats.get(candidate, {}).get("healthy", False):
             circuit_breakers[candidate].record_failure()
             trace(req_id, "health", "unreachable", container=candidate)
             continue

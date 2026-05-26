@@ -304,8 +304,8 @@ async def health_loop() -> None:
         # containers without docker_host use the local socket
         host_groups: dict[str, list[str]] = {}
         for container in targets:
-            host = DOCKER_HOSTS.get(container, "unix:///var/run/docker.sock")
-            host_groups.setdefault(host, []).append(container)
+            host = DOCKER_HOSTS.get(container, "unix:///var/run/docker.sock") #default to local machine
+            host_groups.setdefault(host, []).append(container) #create a list for each host
 
         for docker_host, containers in host_groups.items():
             try:
@@ -345,7 +345,7 @@ async def health_loop() -> None:
                             #mem calc
                             mem_stats = stats["memory_stats"]
                             mem_usage = mem_stats["usage"] - mem_stats.get("stats", {}).get("cache", 0)
-                            mem_limit = mem_stats.get("limit", 1)  # bytes; avoid /0
+                            mem_limit = mem_stats.get("limit", 1)  # avoid /0
                             mem = (mem_usage / mem_limit) * 100 if mem_limit > 0 else 0.0
                             container_stats[container]["mem"] = round(mem, 2)
 
