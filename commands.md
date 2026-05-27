@@ -8,6 +8,20 @@ curl -s http://localhost:8080/metrics | jq
 curl -s http://localhost:8080/api/test | jq
 curl -s http://localhost:8001/ping | jq
 curl -s http://localhost:8001/healthz | jq
+
+```
+## gRPC verification:
+```bash
+# fazer um pedido e ver o req_id
+curl -s http://localhost:8080/api/test | jq
+
+# ver nos logs que usou gRPC
+docker exec proxy-proxy grep "_cygrpc" logs/main.py.log | tail -5
+
+# ver o trace completo do pedido
+req_id=$(docker exec proxy-proxy grep "gateway received" logs/main.py.log | tail -1 | grep -oP '\[\K[^\]]+')
+echo "req_id: $req_id"
+curl -s http://localhost:8080/trace/$req_id | jq
 ```
 
 ## Load Balancing commands:
