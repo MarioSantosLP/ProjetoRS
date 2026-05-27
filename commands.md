@@ -10,6 +10,35 @@ curl -s http://localhost:8001/ping | jq
 curl -s http://localhost:8001/healthz | jq
 ```
 
+## Circuit Breaker commands:
+
+```bash
+status_web1(){ curl -s http://localhost:8080/status | jq '.containers[] | select(.container == "http://web1:8000") | {backend: .container, reachable: .reachable, circuit: .circuit}'; }; metrics(){ curl -s http://localhost:8080/metrics | jq; }
+docker stop proxy-web1 proxy-web3; status_web1; metrics; for i in {1..6}; do curl -s -H "X-Workload-Type: cpu" http://localhost:8080/api/test | jq -r '.service // "ERRO"'; done; status_web1; metrics; docker start proxy-web1 proxy-web3; sleep 31; status_web1; metrics; curl -s -H "X-Workload-Type: cpu" http://localhost:8080/api/test | jq -r '.service // "ERRO"'; status_web1; metrics
+```
+
+## Priority Queue commands:
+
+```bash
+marker=$(date +%s)
+curl -s "http://localhost:8080/marker/start/$marker" >/dev/null
+for i in {1..50}; do curl -s -H "X-Priority: 10" "http://localhost:8080/burn/cpu?duration=5" >/dev/null & done
+sleep 0.3
+for i in {1..20}; do curl -s -H "X-Priority: 10" http://localhost:8080/something >/dev/null & done
+for i in {1..20}; do curl -s -H "X-Priority: 5" http://localhost:8080/api/test >/dev/null & done
+for i in {1..20}; do curl -s -H "X-Priority: 1" http://localhost:8080/admin >/dev/null & done
+wait
+awk "/GET \/marker\/start\/$marker/{flag=1} flag" logs/main.py.log | grep -E "Queued with priority|Worker picked up" | tail -n 200
+```
+
+## Websocket commands:
+
+```bash
+wscat -c ws://localhost:8080/ws -x "olá proxy" --no-check
+for msg in "ping" "hello RS" "bye"; do wscat -c ws://localhost:8080/ws -x "$msg" --no-check; done
+for i in {1..5}; do wscat -c ws://localhost:8080/ws -x "sessão $i" --no-check & done; wait
+```
+
 ## Load Balancing commands:
 
 ### Metrics:

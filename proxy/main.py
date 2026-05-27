@@ -348,7 +348,6 @@ async def trace_endpoint(request: web.Request) -> web.Response:
 
     return web.json_response({"req_id": req_id, "events": timeline})
 
-# --- WebSocket --- depois pode se retirar isto
 async def ws_handle(request: web.Request) -> web.StreamResponse:
     req_id = str(uuid.uuid4())[:8]
     t_start = time.monotonic()
