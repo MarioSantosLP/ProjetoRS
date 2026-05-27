@@ -68,7 +68,7 @@ async def burn_cpu(duration: float = 0.5):
         return x
 
     loop = asyncio.get_running_loop()
-    res = await loop.run_in_executor(None, burn)
+    res = await loop.run_in_executor(None, burn) 
     return {
         "service": NAME,
         "type": "cpu_burn",
