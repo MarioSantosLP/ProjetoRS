@@ -73,7 +73,7 @@ curl -s "http://localhost:8002/burn/memory?size_mb=280&duration=20" | jq
 
 ## Active probe
 
-aumentar a latency com o traffic shaping mandar o professor ver para o pc ig?
+
 
 ### clean before:
 

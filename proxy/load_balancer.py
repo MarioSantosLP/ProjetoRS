@@ -10,9 +10,6 @@ log = logging.getLogger("load_balancer")
 
 CONFIG_PATH = "config/config.json"
 
-#idea:hot reload saw it in nginx
-#and wanted to see if we can implement 
-#making it so that we can update the container list and roles without restarting the load balancer
 
 #to be updated by reload_config
 CONTAINERS : list[str] = []
