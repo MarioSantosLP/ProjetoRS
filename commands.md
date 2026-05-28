@@ -59,7 +59,7 @@ for i in $(seq 1 20); do curl -s http://localhost:8080/api/test | jq -r .service
 ```
 
 ```bash
-for i in {1..30}; do
+for i in {1..20}; do
   curl -s http://localhost:8080/api/test | jq -r '.service'
 done | sort | uniq -c
 ```
