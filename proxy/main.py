@@ -47,7 +47,7 @@ start_time = time.time()
 
 
 
-LOAD_BALANCER = "cpu_aware" #weighted, cpu_aware, active_probe, round_robin 
+LOAD_BALANCER = "active_probe" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
