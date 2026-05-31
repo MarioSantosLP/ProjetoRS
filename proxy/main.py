@@ -48,7 +48,7 @@ start_time = time.time()
 
 
 
-LOAD_BALANCER = "active_probe" #weighted, cpu_aware, active_probe, round_robin 
+LOAD_BALANCER = "cpu_aware" #weighted, cpu_aware, active_probe, round_robin 
 
 health_cache:    dict[str, dict] = {}
 circuit_breakers: dict[str, CircuitBreaker] = {}
@@ -83,7 +83,6 @@ def _remove_container(container: str) -> None: #changed from init
 
 
 def trace(req_id: str, component: str, event: str, **kwargs) -> None:
-    """Append a timestamped event to the trace for req_id."""
     if req_id not in _traces:
         if len(_traces) >= TRACE_MAX:
             _traces.popitem(last=False)  # evict oldest

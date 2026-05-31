@@ -58,7 +58,6 @@ curl -s "http://localhost:8002/burn/memory?size_mb=280&duration=20" | jq
 
 ## Active probe
 
-aumentar a latency com o traffic shaping mandar o professor ver para o pc ig?
 
 ### clean before:
 
@@ -102,11 +101,12 @@ for i in {1..30}; do
 done | sort | uniq -c
 ```
 
-## Traffic shaping:
+## Traffic shaping (multi machine):
 
 ### basic conn
 
-ip do not forget
+ip do not forget- hostname -I
+
 
 ```bash
 curl http://192.168.1.108:8003/ping
@@ -168,7 +168,14 @@ awk "/GET \/marker\/start\/$marker/{flag=1} flag" logs/main.py.log | grep -E "Qu
 
 ## Websocket commands:
 ```bash
-wscat -c ws://localhost:8080/ws -x "olá proxy" --no-check
-for msg in "ping" "hello RS" "bye"; do wscat -c ws://localhost:8080/ws -x "$msg" --no-check; done
-for i in {1..5}; do wscat -c ws://localhost:8080/ws -x "sessão $i" --no-check & done; wait
+(sleep 0.3; echo "ping"; sleep 0.5; echo "hello RS"; sleep 0.5; echo "bye"; sleep 0.3) | wscat -c ws://localhost:8080/ws --no-check
+```
+
+### WebSocket + paragem de container:
+```bash
+wscat -c ws://localhost:8080/ws --no-check
+#envia mensagem para ver qual o conatiner
+docker stop proxy-web4
+sleep 1
+docker start proxy-web4
 ```
