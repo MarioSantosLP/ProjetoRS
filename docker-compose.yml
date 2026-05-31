@@ -1,0 +1,81 @@
+services:
+  web1:
+    build: .
+    container_name: proxy-web1
+    cap_add:
+    - NET_ADMIN
+    environment:
+      - SERVICE_NAME=web1
+    ports:
+      - "8001:8000"
+      - "50051:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  web2:
+    build: .
+    container_name: proxy-web2
+    environment:
+      - SERVICE_NAME=web2
+    ports:
+      - "8002:8000"
+      - "50052:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  web3:
+    build: .
+    container_name: proxy-web3
+    environment:
+      - SERVICE_NAME=web3
+    ports:
+      - "8003:8000"
+      - "50053:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s   
+  
+  web4:
+    build: .
+    container_name: proxy-web4
+    environment:
+      - SERVICE_NAME=web4
+    ports:
+      - "8004:8000"
+      - "50054:50051"  # gRPC
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s  
+
+  proxy:
+      build: ./proxy
+      container_name: proxy-proxy
+      ports:
+        - "8080:8080"
+      volumes:
+        - ./logs:/app/logs
+        - ./config:/app/config
+        - /var/run/docker.sock:/var/run/docker.sock # allow proxy to read container stats via Docker API
+      depends_on:
+        web1:
+          condition: service_healthy
+        web2:
+          condition: service_healthy
+        web3:
+          condition: service_healthy
+        web4:
+          condition: service_healthy

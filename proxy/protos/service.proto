@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package proxy;
+
+service WebService {
+    rpc HandleRequest (HttpRequest) returns (HttpResponse);
+}
+
+message HttpRequest {
+    string method = 1;
+    string path = 2;
+    bytes body = 3;
+    map<string, string> headers = 4;
+}
+
+message HttpResponse {
+    int32 status = 1;
+    bytes body = 2;
+    map<string, string> headers = 3;
+}
