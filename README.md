@@ -7,6 +7,8 @@ O sistema recebe pedidos HTTP e WebSocket através de um proxy principal, que fi
 A solução foi executada em Docker, com vários containers backend a simular servidores independentes, permitindo testar distribuição de carga, falhas, recuperação de serviços e diferentes estratégias de encaminhamento.
 
 ---
+##Grade: 17/20
+---
 
 ## Architecture
 
