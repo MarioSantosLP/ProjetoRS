@@ -8,6 +8,9 @@ import uuid
 from json import JSONDecodeError
 from logging.handlers import RotatingFileHandler
 
+import cache
+from redis.asyncio import Redis
+
 import aiohttp
 import grpc
 from aiohttp import ClientSession, ClientTimeout, web
@@ -177,6 +180,14 @@ async def close_grpc_channels(app: web.Application) -> None:
     log.info("gRPC channels closed")
 
 
+async def startup_redis(app: web.Application) -> None:
+    app["redis"] = Redis.from_url(cache.REDIS_URL, decode_responses=False)
+    log.info("Redis connection established")
+
+async def close_redis(app: web.Application) -> None:
+    await app["redis"].aclose()
+    log.info("Redis connection closed")
+
 async def status(request: web.Request) -> web.Response:
     containers = []
     for c in lb.CONTAINERS:
@@ -245,6 +256,14 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
 
     t_start = time.monotonic()
     trace(req_id, "queue", "dequeued", workload=workload_type or "any")
+
+    wants_cache = request.headers.get("X-Cache", " ").lower() == "true"
+    if wants_cache:
+        cached = await cache.get(app["redis"], request.method, request.path, request.query_string)
+        if cached:
+            trace(req_id, "cache", "hit", path=request.path)
+            log.info(f"[{req_id}] Cache HIT for {request.method} {request.path}")
+            return web.Response(status=200, body=cached, content_type="application/json")
 
     container = None
     tried: set[str] = set()
@@ -319,6 +338,9 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
         trace(req_id, "proxy", "responded", status=grpc_response.status,
               total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
+        if wants_cache:
+            await cache.set(app["redis"], request.method, request.path, request.query_string, grpc_response.body)
+            trace(req_id, "cache", "stored", path=request.path, ttl=cache.CACHE_TTL)
         return web.Response(
             status=grpc_response.status,
             body=grpc_response.body,
@@ -347,6 +369,14 @@ async def trace_endpoint(request: web.Request) -> web.Response:
 
     return web.json_response({"req_id": req_id, "events": timeline})
 
+async def admin_cache_clear(request: web.Request) -> web.Response:
+    path = request.rel_url.query.get("path")
+    redis = request.app["redis"]
+    if path:
+        count = await cache.clear_by_path(redis, path)
+    else:
+        count = await cache.clear_all(redis)
+    return web.json_response({"status": "ok", "keys_removed": count})
 
 async def ws_handle(request: web.Request) -> web.StreamResponse:
     req_id = str(uuid.uuid4())[:8]
@@ -457,8 +487,10 @@ app.on_startup.append(startup_queue)
 app.on_startup.append(startup_health_check) #basically for debug 
 app.on_startup.append(startup_lb_loops) # start load balancer background loops on startup
 app.on_startup.append(startup_grpc_channels)
+app.on_startup.append(startup_redis)
 app.on_cleanup.append(shutdown_queue)
 app.on_cleanup.append(close_grpc_channels)
+app.on_cleanup.append(close_redis)
 app.on_cleanup.append(close_session)
 
 app.router.add_get("/metrics", metrics)
