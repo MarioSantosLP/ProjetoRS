@@ -29,6 +29,8 @@ A solução foi executada em Docker, com vários containers backend a simular se
 - aiodocker
 - gRPC
 - WebSockets
+- Redis
+
 
 
 ---
@@ -186,6 +188,36 @@ GET /trace/{id}
 Shows the internal timeline of a specific request using its request ID.
 
 ---
+
+### Redis Cache
+
+The proxy supports an optional response cache backed by Redis.
+
+Caching is opt-in — only requests that include the `X-Cache: true` header are cached. Responses are stored with a TTL of 60 seconds and only successful responses (status 200) are cached.
+
+The cache key is based on the request method, path and query string.
+
+Cache management endpoints:
+
+```bash
+POST /admin/cache/clear
+```
+
+Clears all cached responses.
+
+```bash
+POST /admin/cache/clear?path=/api/users
+```
+
+Clears cached responses for a specific path.
+
+The `/metrics` endpoint also reports the current number of keys stored in cache:
+
+```json
+"cache": {
+  "keys_in_cache": 4
+}
+```
 
 ### Hot Reload
 
