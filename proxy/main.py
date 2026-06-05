@@ -108,7 +108,9 @@ async def metrics(request: web.Request) -> web.Response:
         "errors_per_container": error_count,
         "container_stats": lb.container_stats,
         "probe_stats": lb.probe_stats,
-
+        "cache": {
+            "keys_in_cache": await cache.count_keys(request.app["redis"]),
+        },
     })
 
 #basically a func to keep build a cache of pings instead of doing one every time
@@ -497,6 +499,7 @@ app.router.add_get("/metrics", metrics)
 app.router.add_get("/status", status)
 app.router.add_get("/trace/{req_id}", trace_endpoint)
 app.router.add_post("/admin/reload", admin_reload)
+app.router.add_post("/admin/cache/clear", admin_cache_clear)
 app.router.add_route("*", "/{path_info:.*}", handle)
 
 if __name__ == "__main__":

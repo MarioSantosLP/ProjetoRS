@@ -29,10 +29,14 @@ async def clear_all(redis: Redis) -> int:
     return len(keys)
 
 async def clear_by_path(redis: Redis, path: str) -> int:
-    keys= await redis.keys(f"cache:*:{path}:*")
-    if keys:
-        await redis.delelte(*keys)
-    log.info(f"Cache cleared for path={path} — {len(keys)} keys removed")
+    pattern = f"cache:*:{path}:*"
+    keys = await redis.keys(pattern)
+    if not keys:
+        return 0
+    count = await redis.delete(*keys)
+    log.info(f"Cache cleared for path={path} — {count} keys removed")
+    return count
+
+async def count_keys(redis: Redis) -> int:
+    keys = await redis.keys("cache:*")
     return len(keys)
-
-
