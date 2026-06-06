@@ -65,8 +65,7 @@ services:
     image: redis:7-alpine
     container_name: proxy-redis
     ports:
-      - "6378:6378"
-    healthcheck:
+      - "6378:6379"
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s

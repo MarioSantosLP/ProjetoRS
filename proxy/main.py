@@ -262,7 +262,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
     wants_cache = request.headers.get("X-Cache", " ").lower() == "true"
     if wants_cache:
         cached = await cache.get(app["redis"], request.method, request.path, request.query_string)
-        if cached:
+        if cached is not None:
             trace(req_id, "cache", "hit", path=request.path)
             log.info(f"[{req_id}] Cache HIT for {request.method} {request.path}")
             return web.Response(status=200, body=cached, content_type="application/json")
@@ -340,7 +340,7 @@ async def forward(app: web.Application, request: web.Request, body: bytes, req_i
         log.info(f"[{req_id}] ← {grpc_response.status} from {container}")
         trace(req_id, "proxy", "responded", status=grpc_response.status,
               total_ms=elapsed_ms, backend_ms=backend_ms, container=container)
-        if wants_cache:
+        if wants_cache and grpc_response.status == 200:
             await cache.set(app["redis"], request.method, request.path, request.query_string, grpc_response.body)
             trace(req_id, "cache", "stored", path=request.path, ttl=cache.CACHE_TTL)
         return web.Response(
