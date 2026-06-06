@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install aiohttp grpcio grpcio-tools protobuf aiodocker --no-cache-dir
+RUN pip install aiohttp grpcio grpcio-tools protobuf aiodocker redis --no-cache-dir
 RUN mkdir -p logs
 COPY protos/service.proto .
+COPY main.py load_balancer.py priority_queue.py circuit.py cache.py ./
 RUN python -m grpc_tools.protoc \
     -I. \
     --python_out=. \
